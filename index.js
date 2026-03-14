@@ -296,7 +296,6 @@ async function handleValidateChat(msg) {
     }
 
     const charName = chatId.substring(0, separatorIndex);
-    const chatFileName = chatId + '.jsonl';
 
     // Check if character exists
     const charIndex = characters.findIndex(c => c.name === charName);
@@ -314,13 +313,13 @@ async function handleValidateChat(msg) {
         });
         if (response.ok) {
             const chats = await response.json();
-            const found = chats.some(chat => chat.file_name === chatFileName);
+            const found = chats.some(chat => chat.file_name === chatId);
             sendToKoishi({
                 type: 'validate_chat_result',
                 requestId,
                 valid: found,
                 chatId,
-                error: found ? null : `Chat file "${chatFileName}" not found for character "${charName}"`,
+                error: found ? null : `Chat "${chatId}" not found for character "${charName}"`,
             });
         } else {
             sendToKoishi({ type: 'validate_chat_result', requestId, valid: false, chatId, error: 'Failed to query chats' });
