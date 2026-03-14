@@ -45,7 +45,7 @@ const DEFAULT_SETTINGS = {
 
 /**
  * Switch to a specific chat by chatId.
- * chatId format: "CharName - 2026-03-14@18h06m18s170ms"
+ * chatId format: "CharName - 2026-03-14@18h06m18s170ms" (no .jsonl suffix)
  * Steps: 1) find character by name, 2) select character, 3) open specific chat file
  */
 async function switchToChat(chatId) {
@@ -55,7 +55,6 @@ async function switchToChat(chatId) {
         throw new Error(`Invalid chatId format: ${chatId}`);
     }
     const charName = chatId.substring(0, separatorIndex);
-    const chatFileName = chatId + '.jsonl';
 
     // Find character index by name
     const charIndex = characters.findIndex(c => c.name === charName);
@@ -66,14 +65,12 @@ async function switchToChat(chatId) {
     // Select the character first (loads their default chat)
     if (this_chid !== charIndex) {
         await selectCharacterById(String(charIndex));
-        // Wait a moment for the chat to load
         await new Promise(r => setTimeout(r, 500));
     }
 
     // Now switch to the specific chat file
-    const context = getContext();
-    if (context.chatId !== chatId) {
-        await openCharacterChat(chatFileName);
+    if (getContext().chatId !== chatId) {
+        await openCharacterChat(chatId);
         await new Promise(r => setTimeout(r, 500));
     }
 }
@@ -273,11 +270,60 @@ async function handleKoishiMessage(msg) {
         case 'send_file':
             await handleSendFile(msg);
             break;
+        case 'validate_chat':
+            await handleValidateChat(msg);
+            break;
         case 'ping':
             sendToKoishi({ type: 'pong' });
             break;
         default:
             log(`Unknown message type: ${msg.type}`, 'warn');
+    }
+}
+
+async function handleValidateChat(msg) {
+    const chatId = msg.chatId;
+    const requestId = msg.requestId;
+
+    // chatId format: "CharName - timestamp"
+    const separatorIndex = chatId.indexOf(' - ');
+    if (separatorIndex === -1) {
+        sendToKoishi({ type: 'validate_chat_result', requestId, valid: false, chatId, error: 'Invalid format' });
+        return;
+    }
+
+    const charName = chatId.substring(0, separatorIndex);
+    const chatFileName = chatId + '.jsonl';
+
+    // Check if character exists
+    const charIndex = characters.findIndex(c => c.name === charName);
+    if (charIndex === -1) {
+        sendToKoishi({ type: 'validate_chat_result', requestId, valid: false, chatId, error: `Character "${charName}" not found` });
+        return;
+    }
+
+    // Check if chat file exists via server API
+    try {
+        const response = await fetch('/api/chats/search', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ query: '', avatar_url: characters[charIndex].avatar }),
+        });
+        if (response.ok) {
+            const chats = await response.json();
+            const found = chats.some(chat => chat.file_name === chatFileName);
+            sendToKoishi({
+                type: 'validate_chat_result',
+                requestId,
+                valid: found,
+                chatId,
+                error: found ? null : `Chat file "${chatFileName}" not found for character "${charName}"`,
+            });
+        } else {
+            sendToKoishi({ type: 'validate_chat_result', requestId, valid: false, chatId, error: 'Failed to query chats' });
+        }
+    } catch (e) {
+        sendToKoishi({ type: 'validate_chat_result', requestId, valid: false, chatId, error: e.message });
     }
 }
 
@@ -404,7 +450,7 @@ function onUserMessageRendered(messageId) {
 
     const sent = sendToKoishi({
         type: 'user_message',
-        chatId: context.chatId,
+        chatId: getContext().chatId,
         characterName: context.name2,
         userName: context.name1,
         content,
@@ -447,7 +493,7 @@ function onCharacterMessageRendered(messageId) {
 
     const sent = sendToKoishi({
         type: 'ai_message',
-        chatId: context.chatId,
+        chatId: getContext().chatId,
         characterName: context.name2,
         content,
         timestamp: Date.now(),
@@ -465,7 +511,7 @@ function onGenerationStarted() {
     const context = getContext();
     sendToKoishi({
         type: 'generation_started',
-        chatId: context.chatId,
+        chatId: getContext().chatId,
         characterName: context.name2,
     });
 }
@@ -474,10 +520,9 @@ function onGenerationEnded() {
     isGenerating = false;
     if (!isConnected) return;
 
-    const context = getContext();
     sendToKoishi({
         type: 'generation_ended',
-        chatId: context.chatId,
+        chatId: getContext().chatId,
     });
 }
 
@@ -543,11 +588,10 @@ function setupTtsCapture() {
                 if (src.startsWith('data:audio')) {
                     const match = src.match(/^data:(audio\/[^;]+);base64,(.*)$/);
                     if (match) {
-                        const context = getContext();
                         sendToKoishi({
                             type: 'ai_tts',
-                            chatId: context.chatId,
-                            characterName: context.name2,
+                            chatId: getContext().chatId,
+                            characterName: getContext().name2,
                             audio: match[2],
                             mimeType: match[1],
                             timestamp: Date.now(),
@@ -604,7 +648,7 @@ function updateChatIdDisplay() {
     if (!el) return;
 
     const context = getContext();
-    el.value = context.chatId || '(no chat loaded)';
+    el.value = getContext().chatId || '(no chat loaded)';
 }
 
 // ============================================================
