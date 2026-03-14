@@ -62,6 +62,19 @@ async function switchToChat(chatId) {
         throw new Error(`Character "${charName}" not found`);
     }
 
+    // Verify the chat file exists before switching
+    const response = await fetch('/api/chats/search', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ query: '', avatar_url: characters[charIndex].avatar }),
+    });
+    if (response.ok) {
+        const chats = await response.json();
+        if (!chats.some(c => c.file_name === chatId)) {
+            throw new Error(`Chat "${chatId}" not found for character "${charName}"`);
+        }
+    }
+
     // Select the character first (loads their default chat)
     if (this_chid !== charIndex) {
         await selectCharacterById(String(charIndex));
@@ -89,6 +102,7 @@ let lastAiMessageId = null;
 let ttsObserver = null;
 
 const MAX_RECONNECT_DELAY = 30000;
+const messageQueue = [];
 
 // ============================================================
 // Settings Management
@@ -179,6 +193,7 @@ function connect() {
         reconnectAttempts = 0;
         log('Connected');
         updateStatus('connected');
+        flushQueue();
     };
 
     ws.onmessage = (event) => {
@@ -248,14 +263,35 @@ function scheduleReconnect() {
 }
 
 function sendToKoishi(msg) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-    try {
-        ws.send(JSON.stringify(msg));
-        return true;
-    } catch (e) {
-        log(`Failed to send: ${e.message}`, 'error');
-        return false;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+            ws.send(JSON.stringify(msg));
+            return true;
+        } catch (e) {
+            log(`Send error, queuing: ${e.message}`, 'warn');
+        }
     }
+    // WS not available or send failed — queue the message
+    messageQueue.push(msg);
+    log(`Message queued (${messageQueue.length} pending)`);
+    return false;
+}
+
+function flushQueue() {
+    if (messageQueue.length === 0) return;
+    log(`Flushing ${messageQueue.length} queued messages...`);
+    let sent = 0;
+    while (messageQueue.length > 0 && ws?.readyState === WebSocket.OPEN) {
+        const msg = messageQueue.shift();
+        try {
+            ws.send(JSON.stringify(msg));
+            sent++;
+        } catch {
+            messageQueue.unshift(msg); // put it back
+            break;
+        }
+    }
+    log(`Flushed ${sent} messages${messageQueue.length > 0 ? `, ${messageQueue.length} remaining` : ''}`);
 }
 
 // ============================================================
