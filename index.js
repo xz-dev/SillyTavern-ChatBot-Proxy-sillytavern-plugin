@@ -1,13 +1,17 @@
 // SillyTavern Koishi Bridge - Client Extension
 // Bridges SillyTavern chats to Koishi bot channels via WebSocket.
 
-import { getContext, extension_settings, saveSettingsDebounced, renderExtensionTemplateAsync } from '../../../extensions.js';
+import { getContext, extension_settings, saveSettingsDebounced } from '../../../extensions.js';
 import {
     eventSource,
     event_types,
     sendMessageAsUser,
     Generate,
+    getRequestHeaders,
 } from '../../../../script.js';
+
+// Derive extension folder URL for loading templates
+const EXTENSION_FOLDER_URL = import.meta.url.substring(0, import.meta.url.lastIndexOf('/'));
 
 // ============================================================
 // Constants
@@ -189,7 +193,8 @@ function disconnect() {
 
 function scheduleReconnect() {
     const settings = getSettings();
-    if (!settings.autoConnect && reconnectAttempts > 0) return;
+    // Always reconnect if autoConnect is on, or on the first drop of a manual connection
+    if (!settings.autoConnect) return;
 
     const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), MAX_RECONNECT_DELAY);
     reconnectAttempts++;
@@ -273,28 +278,16 @@ async function handleSendFile(msg) {
     pendingSourceChannelKey = msg.sourceChannelKey;
 
     try {
-        // Convert base64 to File object
-        const byteString = atob(msg.file.data);
-        const ab = new ArrayBuffer(byteString.length);
-        const ia = new Uint8Array(ab);
-        for (let i = 0; i < byteString.length; i++) {
-            ia[i] = byteString.charCodeAt(i);
-        }
-        const blob = new Blob([ab], { type: msg.file.mimeType });
-        const file = new File([blob], msg.file.name, { type: msg.file.mimeType });
-
-        // Upload via the ST file upload API
-        const formData = new FormData();
-        formData.append('avatar', file);
-
-        const headers = context.getRequestHeaders ? context.getRequestHeaders() : {};
-        // Remove content-type to let browser set multipart boundary
-        delete headers['Content-Type'];
+        // Upload via the ST file upload API (JSON body with base64 data)
+        const headers = getRequestHeaders();
 
         const response = await fetch('/api/files/upload', {
             method: 'POST',
             headers,
-            body: formData,
+            body: JSON.stringify({
+                name: msg.file.name,
+                data: `data:${msg.file.mimeType};base64,${msg.file.data}`,
+            }),
         });
 
         if (!response.ok) {
@@ -552,7 +545,8 @@ function updateChatIdDisplay() {
 // ============================================================
 
 async function initUI() {
-    const settingsHtml = await renderExtensionTemplateAsync(MODULE_NAME, 'settings');
+    // Load settings HTML directly via fetch (more reliable for third-party extensions)
+    const settingsHtml = await (await fetch(`${EXTENSION_FOLDER_URL}/settings.html`)).text();
     const container = document.getElementById('extensions_settings');
     if (container) {
         container.insertAdjacentHTML('beforeend', settingsHtml);
