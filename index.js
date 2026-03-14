@@ -276,9 +276,6 @@ async function handleKoishiMessage(msg) {
         case 'list_chats':
             await handleListChats(msg);
             break;
-        case 'ping':
-            sendToKoishi({ type: 'pong' });
-            break;
         default:
             log(`Unknown message type: ${msg.type}`, 'warn');
     }
