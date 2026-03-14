@@ -1,0 +1,11 @@
+{
+    "display_name": "Koishi Bridge",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "SillyTavern-ChatBot-Proxy",
+    "version": "0.1.0",
+    "description": "Bridges SillyTavern chats to Koishi bot channels via WebSocket"
+}

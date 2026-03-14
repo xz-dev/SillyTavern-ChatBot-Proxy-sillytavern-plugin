@@ -1,0 +1,79 @@
+<div id="koishi-bridge-settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>Koishi Bridge</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <!-- Connection Settings -->
+            <div>
+                <label for="koishi_bridge_ws_url">WebSocket URL</label>
+                <input id="koishi_bridge_ws_url" class="text_pole" type="text"
+                    placeholder="ws://localhost:5140/st-proxy" />
+            </div>
+            <div>
+                <label for="koishi_bridge_api_key">API Key</label>
+                <input id="koishi_bridge_api_key" class="text_pole" type="password"
+                    placeholder="Enter API key" />
+            </div>
+
+            <!-- Toggle Options -->
+            <div>
+                <label class="checkbox_label" for="koishi_bridge_auto_connect">
+                    <input id="koishi_bridge_auto_connect" type="checkbox" />
+                    <span>Auto Connect on Load</span>
+                </label>
+            </div>
+            <div>
+                <label class="checkbox_label" for="koishi_bridge_forward_user">
+                    <input id="koishi_bridge_forward_user" type="checkbox" checked />
+                    <span>Forward User Messages</span>
+                </label>
+            </div>
+            <div>
+                <label class="checkbox_label" for="koishi_bridge_forward_ai">
+                    <input id="koishi_bridge_forward_ai" type="checkbox" checked />
+                    <span>Forward AI Messages</span>
+                </label>
+            </div>
+            <div>
+                <label class="checkbox_label" for="koishi_bridge_forward_tts">
+                    <input id="koishi_bridge_forward_tts" type="checkbox" checked />
+                    <span>Forward AI TTS Audio</span>
+                </label>
+            </div>
+            <div>
+                <label class="checkbox_label" for="koishi_bridge_forward_images">
+                    <input id="koishi_bridge_forward_images" type="checkbox" checked />
+                    <span>Forward Images</span>
+                </label>
+            </div>
+
+            <!-- Current Chat ID -->
+            <div style="margin-top: 8px;">
+                <label>Current Chat ID (copy this for <code>bind</code> command)</label>
+                <div id="koishi_bridge_chat_id" class="text_pole"
+                    style="padding: 6px; min-height: 1.5em; cursor: pointer;"
+                    title="Click to copy">
+                    (no chat loaded)
+                </div>
+            </div>
+
+            <!-- Status & Controls -->
+            <div style="margin-top: 8px; display: flex; align-items: center; gap: 8px;">
+                <span class="status-indicator disconnected" id="koishi_bridge_status_dot"></span>
+                <span id="koishi_bridge_status_text">Disconnected</span>
+            </div>
+            <div style="margin-top: 6px; display: flex; gap: 6px;">
+                <input id="koishi_bridge_connect_btn" class="menu_button" type="button" value="Connect" />
+                <input id="koishi_bridge_disconnect_btn" class="menu_button" type="button" value="Disconnect" disabled />
+            </div>
+
+            <!-- Log -->
+            <div style="margin-top: 8px;">
+                <label>Log</label>
+                <div id="koishi_bridge_log"></div>
+            </div>
+        </div>
+    </div>
+</div>

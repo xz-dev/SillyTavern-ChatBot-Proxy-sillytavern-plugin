@@ -1,0 +1,700 @@
+// SillyTavern Koishi Bridge - Client Extension
+// Bridges SillyTavern chats to Koishi bot channels via WebSocket.
+
+import { getContext, extension_settings, saveSettingsDebounced, renderExtensionTemplateAsync } from '../../../extensions.js';
+import {
+    eventSource,
+    event_types,
+    sendMessageAsUser,
+    Generate,
+} from '../../../../script.js';
+
+// ============================================================
+// Constants
+// ============================================================
+
+const MODULE_NAME = 'koishi-bridge';
+const LOG_MAX_ENTRIES = 100;
+
+// ============================================================
+// Default Settings
+// ============================================================
+
+const DEFAULT_SETTINGS = {
+    wsUrl: 'ws://localhost:5140/st-proxy',
+    apiKey: '',
+    autoConnect: false,
+    forwardUser: true,
+    forwardAi: true,
+    forwardTts: true,
+    forwardImages: true,
+};
+
+// ============================================================
+// State
+// ============================================================
+
+let ws = null;
+let isConnected = false;
+let reconnectAttempts = 0;
+let reconnectTimer = null;
+let pendingSourceChannelKey = null;
+let isGenerating = false;
+let lastAiMessageId = null;
+let ttsObserver = null;
+
+const MAX_RECONNECT_DELAY = 30000;
+
+// ============================================================
+// Settings Management
+// ============================================================
+
+function getSettings() {
+    if (!extension_settings[MODULE_NAME]) {
+        extension_settings[MODULE_NAME] = {};
+    }
+    // Apply defaults for missing keys
+    for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
+        if (extension_settings[MODULE_NAME][key] === undefined) {
+            extension_settings[MODULE_NAME][key] = value;
+        }
+    }
+    return extension_settings[MODULE_NAME];
+}
+
+function saveSettings() {
+    saveSettingsDebounced();
+}
+
+// ============================================================
+// Logging
+// ============================================================
+
+function log(message, level = 'info') {
+    const prefix = `[Koishi Bridge]`;
+    if (level === 'error') {
+        console.error(prefix, message);
+    } else if (level === 'warn') {
+        console.warn(prefix, message);
+    } else {
+        console.log(prefix, message);
+    }
+
+    // Update UI log
+    const logEl = document.getElementById('koishi_bridge_log');
+    if (logEl) {
+        const entry = document.createElement('div');
+        entry.classList.add('log-entry');
+        const time = new Date().toLocaleTimeString();
+        entry.textContent = `[${time}] ${message}`;
+        logEl.appendChild(entry);
+
+        // Trim old entries
+        while (logEl.children.length > LOG_MAX_ENTRIES) {
+            logEl.removeChild(logEl.firstChild);
+        }
+
+        // Auto scroll
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+}
+
+// ============================================================
+// WebSocket Connection
+// ============================================================
+
+function connect() {
+    const settings = getSettings();
+    if (!settings.wsUrl) {
+        log('No WebSocket URL configured', 'warn');
+        return;
+    }
+
+    disconnect(); // Clean up any existing connection
+
+    const url = new URL(settings.wsUrl);
+    if (settings.apiKey) {
+        url.searchParams.set('key', settings.apiKey);
+    }
+
+    log(`Connecting to ${settings.wsUrl}...`);
+    updateStatus('connecting');
+
+    try {
+        ws = new WebSocket(url.toString());
+    } catch (e) {
+        log(`Failed to create WebSocket: ${e.message}`, 'error');
+        updateStatus('disconnected');
+        scheduleReconnect();
+        return;
+    }
+
+    ws.onopen = () => {
+        isConnected = true;
+        reconnectAttempts = 0;
+        log('Connected');
+        updateStatus('connected');
+    };
+
+    ws.onmessage = (event) => {
+        try {
+            const msg = JSON.parse(event.data);
+            handleKoishiMessage(msg);
+        } catch (e) {
+            log(`Failed to parse message: ${e.message}`, 'error');
+        }
+    };
+
+    ws.onclose = (event) => {
+        const wasConnected = isConnected;
+        isConnected = false;
+        ws = null;
+        updateStatus('disconnected');
+
+        if (event.code === 4001) {
+            log('Authentication failed. Check your API key.', 'error');
+            // Don't reconnect on auth failure
+            return;
+        }
+
+        if (wasConnected) {
+            log(`Disconnected (code: ${event.code})`);
+        }
+
+        scheduleReconnect();
+    };
+
+    ws.onerror = (event) => {
+        log('WebSocket error', 'error');
+    };
+}
+
+function disconnect() {
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+    reconnectAttempts = 0;
+
+    if (ws) {
+        // Remove listeners to prevent reconnect on intentional disconnect
+        ws.onclose = null;
+        ws.onerror = null;
+        ws.close();
+        ws = null;
+    }
+    isConnected = false;
+    updateStatus('disconnected');
+}
+
+function scheduleReconnect() {
+    const settings = getSettings();
+    if (!settings.autoConnect && reconnectAttempts > 0) return;
+
+    const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), MAX_RECONNECT_DELAY);
+    reconnectAttempts++;
+    log(`Reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts})...`);
+
+    reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+    }, delay);
+}
+
+function sendToKoishi(msg) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    try {
+        ws.send(JSON.stringify(msg));
+        return true;
+    } catch (e) {
+        log(`Failed to send: ${e.message}`, 'error');
+        return false;
+    }
+}
+
+// ============================================================
+// Handle messages from Koishi
+// ============================================================
+
+async function handleKoishiMessage(msg) {
+    switch (msg.type) {
+        case 'send_message':
+            await handleSendMessage(msg);
+            break;
+        case 'send_file':
+            await handleSendFile(msg);
+            break;
+        case 'ping':
+            sendToKoishi({ type: 'pong' });
+            break;
+        default:
+            log(`Unknown message type: ${msg.type}`, 'warn');
+    }
+}
+
+async function handleSendMessage(msg) {
+    const context = getContext();
+
+    // Check if the current chat matches
+    if (context.chatId !== msg.chatId) {
+        log(`Chat ID mismatch: current=${context.chatId}, requested=${msg.chatId}`, 'warn');
+        return;
+    }
+
+    log(`Forwarding message from ${msg.senderName} via ${msg.sourceChannelKey}`);
+
+    // Mark the source so we can tag the outgoing user_message
+    pendingSourceChannelKey = msg.sourceChannelKey;
+
+    try {
+        await sendMessageAsUser(msg.text);
+        await Generate('normal');
+    } catch (e) {
+        log(`Failed to send/generate: ${e.message}`, 'error');
+    } finally {
+        // pendingSourceChannelKey is consumed in onUserMessageRendered
+        // but clear it here as a safety net after a delay
+        setTimeout(() => {
+            pendingSourceChannelKey = null;
+        }, 5000);
+    }
+}
+
+async function handleSendFile(msg) {
+    const context = getContext();
+
+    if (context.chatId !== msg.chatId) {
+        log(`Chat ID mismatch for file: current=${context.chatId}, requested=${msg.chatId}`, 'warn');
+        return;
+    }
+
+    log(`Forwarding file ${msg.file.name} from ${msg.senderName}`);
+
+    pendingSourceChannelKey = msg.sourceChannelKey;
+
+    try {
+        // Convert base64 to File object
+        const byteString = atob(msg.file.data);
+        const ab = new ArrayBuffer(byteString.length);
+        const ia = new Uint8Array(ab);
+        for (let i = 0; i < byteString.length; i++) {
+            ia[i] = byteString.charCodeAt(i);
+        }
+        const blob = new Blob([ab], { type: msg.file.mimeType });
+        const file = new File([blob], msg.file.name, { type: msg.file.mimeType });
+
+        // Upload via the ST file upload API
+        const formData = new FormData();
+        formData.append('avatar', file);
+
+        const headers = context.getRequestHeaders ? context.getRequestHeaders() : {};
+        // Remove content-type to let browser set multipart boundary
+        delete headers['Content-Type'];
+
+        const response = await fetch('/api/files/upload', {
+            method: 'POST',
+            headers,
+            body: formData,
+        });
+
+        if (!response.ok) {
+            log(`File upload failed: ${response.status}`, 'error');
+        } else {
+            log(`File uploaded: ${msg.file.name}`);
+        }
+    } catch (e) {
+        log(`Failed to upload file: ${e.message}`, 'error');
+    } finally {
+        setTimeout(() => {
+            pendingSourceChannelKey = null;
+        }, 5000);
+    }
+}
+
+// ============================================================
+// ST Event Handlers: ST → Koishi
+// ============================================================
+
+function onUserMessageRendered(messageId) {
+    const settings = getSettings();
+    if (!settings.forwardUser || !isConnected) return;
+
+    const context = getContext();
+    const message = context.chat?.[messageId];
+    if (!message) return;
+
+    // Skip system messages
+    if (message.is_system) return;
+
+    // Only forward user messages
+    if (!message.is_user) return;
+
+    const content = {
+        text: message.mes || '',
+        images: [],
+        files: [],
+    };
+
+    // Extract images from message if enabled
+    if (settings.forwardImages) {
+        content.images = extractImagesFromRenderedMessage(messageId);
+    }
+
+    if (!content.text && content.images.length === 0) return;
+
+    const sent = sendToKoishi({
+        type: 'user_message',
+        chatId: context.chatId,
+        characterName: context.name2,
+        userName: context.name1,
+        content,
+        sourceChannelKey: pendingSourceChannelKey,
+        timestamp: Date.now(),
+    });
+
+    if (sent) {
+        log(`Forwarded user message (${content.text.substring(0, 50)}...)`);
+    }
+
+    // Consume the pending source channel key
+    pendingSourceChannelKey = null;
+}
+
+function onCharacterMessageRendered(messageId) {
+    const settings = getSettings();
+    if (!settings.forwardAi || !isConnected) return;
+
+    const context = getContext();
+    const message = context.chat?.[messageId];
+    if (!message) return;
+
+    // Skip system messages and user messages
+    if (message.is_system || message.is_user) return;
+
+    lastAiMessageId = messageId;
+
+    const content = {
+        text: message.mes || '',
+        images: [],
+    };
+
+    // Extract images from rendered message
+    if (settings.forwardImages) {
+        content.images = extractImagesFromRenderedMessage(messageId);
+    }
+
+    if (!content.text && content.images.length === 0) return;
+
+    const sent = sendToKoishi({
+        type: 'ai_message',
+        chatId: context.chatId,
+        characterName: context.name2,
+        content,
+        timestamp: Date.now(),
+    });
+
+    if (sent) {
+        log(`Forwarded AI message (${content.text.substring(0, 50)}...)`);
+    }
+}
+
+function onGenerationStarted() {
+    isGenerating = true;
+    if (!isConnected) return;
+
+    const context = getContext();
+    sendToKoishi({
+        type: 'generation_started',
+        chatId: context.chatId,
+        characterName: context.name2,
+    });
+}
+
+function onGenerationEnded() {
+    isGenerating = false;
+    if (!isConnected) return;
+
+    const context = getContext();
+    sendToKoishi({
+        type: 'generation_ended',
+        chatId: context.chatId,
+    });
+}
+
+// ============================================================
+// Image Extraction
+// ============================================================
+
+function extractImagesFromRenderedMessage(messageId) {
+    const images = [];
+    try {
+        const mesElement = document.querySelector(`#chat .mes[mesid="${messageId}"]`);
+        if (!mesElement) return images;
+
+        const imgElements = mesElement.querySelectorAll('.mes_text img');
+        for (const img of imgElements) {
+            const src = img.getAttribute('src') || '';
+            if (src.startsWith('data:')) {
+                // Already base64
+                const match = src.match(/^data:(.*?);base64,(.*)$/);
+                if (match) {
+                    images.push({ data: match[2], mimeType: match[1] });
+                }
+            }
+            // For URL images, we'd need to fetch them — skip for now to avoid complexity
+            // TODO: fetch URL images and convert to base64
+        }
+    } catch (e) {
+        log(`Image extraction error: ${e.message}`, 'warn');
+    }
+    return images;
+}
+
+// ============================================================
+// TTS Audio Capture
+// ============================================================
+
+function setupTtsCapture() {
+    // Watch for the #tts_audio element to appear
+    const checkForTtsAudio = setInterval(() => {
+        const audioEl = document.getElementById('tts_audio');
+        if (!audioEl) return;
+
+        clearInterval(checkForTtsAudio);
+        log('TTS audio element detected, setting up capture');
+
+        // Use MutationObserver to watch src attribute changes
+        ttsObserver = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                if (mutation.type !== 'attributes' || mutation.attributeName !== 'src') continue;
+
+                const settings = getSettings();
+                if (!settings.forwardTts || !isConnected) continue;
+
+                const el = mutation.target;
+                const src = el.src;
+
+                // Skip silence and empty
+                if (!src || src.endsWith('silence.mp3') || src === '') continue;
+
+                // Only capture after AI messages (not user STT)
+                if (!lastAiMessageId) continue;
+
+                if (src.startsWith('data:audio')) {
+                    const match = src.match(/^data:(audio\/[^;]+);base64,(.*)$/);
+                    if (match) {
+                        const context = getContext();
+                        sendToKoishi({
+                            type: 'ai_tts',
+                            chatId: context.chatId,
+                            characterName: context.name2,
+                            audio: match[2],
+                            mimeType: match[1],
+                            timestamp: Date.now(),
+                        });
+                        log('Forwarded AI TTS audio');
+                    }
+                }
+                // Reset after capture to avoid double-sending
+                lastAiMessageId = null;
+            }
+        });
+
+        ttsObserver.observe(audioEl, {
+            attributes: true,
+            attributeFilter: ['src'],
+        });
+    }, 2000);
+}
+
+// ============================================================
+// Status UI
+// ============================================================
+
+function updateStatus(status) {
+    const dot = document.getElementById('koishi_bridge_status_dot');
+    const text = document.getElementById('koishi_bridge_status_text');
+    const connectBtn = document.getElementById('koishi_bridge_connect_btn');
+    const disconnectBtn = document.getElementById('koishi_bridge_disconnect_btn');
+
+    if (dot) {
+        dot.classList.remove('connected', 'disconnected', 'connecting');
+        dot.classList.add(status);
+    }
+
+    if (text) {
+        const labels = {
+            connected: 'Connected',
+            disconnected: 'Disconnected',
+            connecting: 'Connecting...',
+        };
+        text.textContent = labels[status] || status;
+    }
+
+    if (connectBtn) {
+        connectBtn.disabled = status === 'connected' || status === 'connecting';
+    }
+    if (disconnectBtn) {
+        disconnectBtn.disabled = status === 'disconnected';
+    }
+}
+
+function updateChatIdDisplay() {
+    const el = document.getElementById('koishi_bridge_chat_id');
+    if (!el) return;
+
+    const context = getContext();
+    el.textContent = context.chatId || '(no chat loaded)';
+}
+
+// ============================================================
+// UI Initialization
+// ============================================================
+
+async function initUI() {
+    const settingsHtml = await renderExtensionTemplateAsync(MODULE_NAME, 'settings');
+    const container = document.getElementById('extensions_settings');
+    if (container) {
+        container.insertAdjacentHTML('beforeend', settingsHtml);
+    }
+
+    const settings = getSettings();
+
+    // Populate fields
+    const wsUrlInput = document.getElementById('koishi_bridge_ws_url');
+    const apiKeyInput = document.getElementById('koishi_bridge_api_key');
+    const autoConnectInput = document.getElementById('koishi_bridge_auto_connect');
+    const forwardUserInput = document.getElementById('koishi_bridge_forward_user');
+    const forwardAiInput = document.getElementById('koishi_bridge_forward_ai');
+    const forwardTtsInput = document.getElementById('koishi_bridge_forward_tts');
+    const forwardImagesInput = document.getElementById('koishi_bridge_forward_images');
+
+    if (wsUrlInput) wsUrlInput.value = settings.wsUrl;
+    if (apiKeyInput) apiKeyInput.value = settings.apiKey;
+    if (autoConnectInput) autoConnectInput.checked = settings.autoConnect;
+    if (forwardUserInput) forwardUserInput.checked = settings.forwardUser;
+    if (forwardAiInput) forwardAiInput.checked = settings.forwardAi;
+    if (forwardTtsInput) forwardTtsInput.checked = settings.forwardTts;
+    if (forwardImagesInput) forwardImagesInput.checked = settings.forwardImages;
+
+    // Bind change events
+    wsUrlInput?.addEventListener('input', () => {
+        settings.wsUrl = wsUrlInput.value.trim();
+        saveSettings();
+    });
+
+    apiKeyInput?.addEventListener('input', () => {
+        settings.apiKey = apiKeyInput.value.trim();
+        saveSettings();
+    });
+
+    autoConnectInput?.addEventListener('change', () => {
+        settings.autoConnect = autoConnectInput.checked;
+        saveSettings();
+    });
+
+    forwardUserInput?.addEventListener('change', () => {
+        settings.forwardUser = forwardUserInput.checked;
+        saveSettings();
+    });
+
+    forwardAiInput?.addEventListener('change', () => {
+        settings.forwardAi = forwardAiInput.checked;
+        saveSettings();
+    });
+
+    forwardTtsInput?.addEventListener('change', () => {
+        settings.forwardTts = forwardTtsInput.checked;
+        saveSettings();
+    });
+
+    forwardImagesInput?.addEventListener('change', () => {
+        settings.forwardImages = forwardImagesInput.checked;
+        saveSettings();
+    });
+
+    // Connect / Disconnect buttons
+    document.getElementById('koishi_bridge_connect_btn')?.addEventListener('click', () => {
+        connect();
+    });
+
+    document.getElementById('koishi_bridge_disconnect_btn')?.addEventListener('click', () => {
+        disconnect();
+        log('Manually disconnected');
+    });
+
+    // Chat ID click-to-copy
+    document.getElementById('koishi_bridge_chat_id')?.addEventListener('click', () => {
+        const context = getContext();
+        if (context.chatId) {
+            navigator.clipboard.writeText(context.chatId).then(() => {
+                log(`Copied chat ID: ${context.chatId}`);
+            }).catch(() => {
+                // Fallback: select text
+                const el = document.getElementById('koishi_bridge_chat_id');
+                if (el) {
+                    const range = document.createRange();
+                    range.selectNodeContents(el);
+                    const sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                }
+            });
+        }
+    });
+
+    updateChatIdDisplay();
+}
+
+// ============================================================
+// Event Registration
+// ============================================================
+
+function registerEvents() {
+    // User and AI message events
+    eventSource.on(event_types.USER_MESSAGE_RENDERED, onUserMessageRendered);
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onCharacterMessageRendered);
+
+    // Generation lifecycle
+    eventSource.on(event_types.GENERATION_STARTED, onGenerationStarted);
+    eventSource.on(event_types.GENERATION_ENDED, onGenerationEnded);
+    eventSource.on(event_types.GENERATION_STOPPED, onGenerationEnded);
+
+    // Chat changed — update chat ID display
+    eventSource.on(event_types.CHAT_CHANGED, () => {
+        updateChatIdDisplay();
+        lastAiMessageId = null;
+        pendingSourceChannelKey = null;
+    });
+
+    // Settings loaded
+    eventSource.on(event_types.SETTINGS_LOADED, () => {
+        updateChatIdDisplay();
+    });
+}
+
+// ============================================================
+// Entry Point
+// ============================================================
+
+jQuery(async () => {
+    // Init UI
+    await initUI();
+
+    // Register event listeners
+    registerEvents();
+
+    // Setup TTS capture
+    setupTtsCapture();
+
+    // Auto-connect if enabled
+    const settings = getSettings();
+    if (settings.autoConnect && settings.wsUrl) {
+        // Small delay to let ST fully initialize
+        setTimeout(() => {
+            connect();
+        }, 2000);
+    }
+
+    log('Extension loaded');
+});

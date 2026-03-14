@@ -1,0 +1,53 @@
+#koishi-bridge-settings .inline-drawer-toggle {
+    cursor: pointer;
+    user-select: none;
+}
+
+#koishi-bridge-settings .status-indicator {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+}
+
+#koishi-bridge-settings .status-indicator.connected {
+    background-color: #4caf50;
+}
+
+#koishi-bridge-settings .status-indicator.disconnected {
+    background-color: #f44336;
+}
+
+#koishi-bridge-settings .status-indicator.connecting {
+    background-color: #ff9800;
+    animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+#koishi_bridge_chat_id {
+    font-family: monospace;
+    font-size: 0.85em;
+    word-break: break-all;
+}
+
+#koishi_bridge_log {
+    max-height: 150px;
+    overflow-y: auto;
+    font-family: monospace;
+    font-size: 0.8em;
+    background: var(--SmartThemeBotMesBlurTintColor, #1a1a1a);
+    padding: 6px;
+    border-radius: 4px;
+    margin-top: 6px;
+}
+
+#koishi_bridge_log .log-entry {
+    padding: 1px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+}
