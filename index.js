@@ -10,6 +10,7 @@ import {
     getRequestHeaders,
     saveSettingsDebounced,
     openCharacterChat,
+    selectCharacterById,
     characters,
     this_chid,
 } from '../../../../script.js';
@@ -37,6 +38,45 @@ const DEFAULT_SETTINGS = {
     forwardTts: true,
     forwardImages: true,
 };
+
+// ============================================================
+// Chat Switching
+// ============================================================
+
+/**
+ * Switch to a specific chat by chatId.
+ * chatId format: "CharName - 2026-03-14@18h06m18s170ms"
+ * Steps: 1) find character by name, 2) select character, 3) open specific chat file
+ */
+async function switchToChat(chatId) {
+    // Extract character name from chatId (everything before " - ")
+    const separatorIndex = chatId.indexOf(' - ');
+    if (separatorIndex === -1) {
+        throw new Error(`Invalid chatId format: ${chatId}`);
+    }
+    const charName = chatId.substring(0, separatorIndex);
+    const chatFileName = chatId + '.jsonl';
+
+    // Find character index by name
+    const charIndex = characters.findIndex(c => c.name === charName);
+    if (charIndex === -1) {
+        throw new Error(`Character "${charName}" not found`);
+    }
+
+    // Select the character first (loads their default chat)
+    if (this_chid !== charIndex) {
+        await selectCharacterById(String(charIndex));
+        // Wait a moment for the chat to load
+        await new Promise(r => setTimeout(r, 500));
+    }
+
+    // Now switch to the specific chat file
+    const context = getContext();
+    if (context.chatId !== chatId) {
+        await openCharacterChat(chatFileName);
+        await new Promise(r => setTimeout(r, 500));
+    }
+}
 
 // ============================================================
 // State
@@ -251,9 +291,7 @@ async function handleSendMessage(msg) {
     // Auto-switch to target chat if needed
     if (needsSwitch) {
         try {
-            // chatId format: "CharName - timestamp" → we need the .jsonl filename
-            const chatFileName = msg.chatId + '.jsonl';
-            await openCharacterChat(chatFileName);
+            await switchToChat(msg.chatId);
             log(`Switched to chat: ${msg.chatId}`);
         } catch (e) {
             log(`Failed to switch chat: ${e.message}`, 'error');
@@ -280,8 +318,7 @@ async function handleSendMessage(msg) {
     // Switch back to original chat if we switched away
     if (needsSwitch && currentChatId) {
         try {
-            const originalFileName = currentChatId + '.jsonl';
-            await openCharacterChat(originalFileName);
+            await switchToChat(currentChatId);
             log(`Switched back to: ${currentChatId}`);
         } catch (e) {
             log(`Failed to switch back: ${e.message}`, 'warn');
@@ -296,7 +333,7 @@ async function handleSendFile(msg) {
 
     if (needsSwitch) {
         try {
-            await openCharacterChat(msg.chatId + '.jsonl');
+            await switchToChat(msg.chatId);
         } catch (e) {
             log(`Failed to switch chat for file: ${e.message}`, 'error');
             return;
