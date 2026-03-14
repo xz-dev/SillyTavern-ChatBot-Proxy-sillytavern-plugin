@@ -538,7 +538,7 @@ function updateChatIdDisplay() {
     if (!el) return;
 
     const context = getContext();
-    el.textContent = context.chatId || '(no chat loaded)';
+    el.value = context.chatId || '(no chat loaded)';
 }
 
 // ============================================================
@@ -618,24 +618,9 @@ async function initUI() {
         log('Manually disconnected');
     });
 
-    // Chat ID click-to-copy
-    document.getElementById('koishi_bridge_chat_id')?.addEventListener('click', () => {
-        const context = getContext();
-        if (context.chatId) {
-            navigator.clipboard.writeText(context.chatId).then(() => {
-                log(`Copied chat ID: ${context.chatId}`);
-            }).catch(() => {
-                // Fallback: select text
-                const el = document.getElementById('koishi_bridge_chat_id');
-                if (el) {
-                    const range = document.createRange();
-                    range.selectNodeContents(el);
-                    const sel = window.getSelection();
-                    sel.removeAllRanges();
-                    sel.addRange(range);
-                }
-            });
-        }
+    // Chat ID click-to-select
+    document.getElementById('koishi_bridge_chat_id')?.addEventListener('click', (e) => {
+        e.target.select();
     });
 
     updateChatIdDisplay();
@@ -681,6 +666,9 @@ jQuery(async () => {
 
     // Setup TTS capture
     setupTtsCapture();
+
+    // Update chat ID display immediately (in case chat was already loaded before extension)
+    setTimeout(updateChatIdDisplay, 500);
 
     // Auto-connect if enabled
     const settings = getSettings();

@@ -51,12 +51,10 @@
 
             <!-- Current Chat ID -->
             <div style="margin-top: 8px;">
-                <label>Current Chat ID (copy this for <code>bind</code> command)</label>
-                <div id="koishi_bridge_chat_id" class="text_pole"
-                    style="padding: 6px; min-height: 1.5em; cursor: pointer;"
-                    title="Click to copy">
-                    (no chat loaded)
-                </div>
+                <label for="koishi_bridge_chat_id">Current Chat ID (copy this for <code>bind</code> command)</label>
+                <input id="koishi_bridge_chat_id" class="text_pole" type="text"
+                    readonly value="(no chat loaded)"
+                    title="Click to select, then copy" />
             </div>
 
             <!-- Status & Controls -->
