@@ -407,6 +407,12 @@ async function handleSendMessage(msg) {
             log(`Switched to chat: ${msg.chatId}`);
         } catch (e) {
             log(`Failed to switch chat: ${e.message}`, 'error');
+            sendToKoishi({
+                type: 'send_message_result',
+                sourceChannelKey: msg.sourceChannelKey,
+                success: false,
+                error: e.message,
+            });
             return;
         }
     }
@@ -419,6 +425,12 @@ async function handleSendMessage(msg) {
         await Generate('normal');
     } catch (e) {
         log(`Failed to send/generate: ${e.message}`, 'error');
+        sendToKoishi({
+            type: 'send_message_result',
+            sourceChannelKey: msg.sourceChannelKey,
+            success: false,
+            error: e.message,
+        });
     } finally {
         // pendingSourceChannelKey is consumed in onUserMessageRendered
         // but clear it here as a safety net after a delay
@@ -448,6 +460,12 @@ async function handleSendFile(msg) {
             await switchToChat(msg.chatId);
         } catch (e) {
             log(`Failed to switch chat for file: ${e.message}`, 'error');
+            sendToKoishi({
+                type: 'send_message_result',
+                sourceChannelKey: msg.sourceChannelKey,
+                success: false,
+                error: e.message,
+            });
             return;
         }
     }
@@ -471,11 +489,23 @@ async function handleSendFile(msg) {
 
         if (!response.ok) {
             log(`File upload failed: ${response.status}`, 'error');
+            sendToKoishi({
+                type: 'send_message_result',
+                sourceChannelKey: msg.sourceChannelKey,
+                success: false,
+                error: `File upload failed: HTTP ${response.status}`,
+            });
         } else {
             log(`File uploaded: ${msg.file.name}`);
         }
     } catch (e) {
         log(`Failed to upload file: ${e.message}`, 'error');
+        sendToKoishi({
+            type: 'send_message_result',
+            sourceChannelKey: msg.sourceChannelKey,
+            success: false,
+            error: e.message,
+        });
     } finally {
         setTimeout(() => {
             pendingSourceChannelKey = null;
