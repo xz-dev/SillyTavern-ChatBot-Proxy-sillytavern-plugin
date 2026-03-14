@@ -273,6 +273,9 @@ async function handleKoishiMessage(msg) {
         case 'validate_chat':
             await handleValidateChat(msg);
             break;
+        case 'list_chats':
+            await handleListChats(msg);
+            break;
         case 'ping':
             sendToKoishi({ type: 'pong' });
             break;
@@ -324,6 +327,37 @@ async function handleValidateChat(msg) {
         }
     } catch (e) {
         sendToKoishi({ type: 'validate_chat_result', requestId, valid: false, chatId, error: e.message });
+    }
+}
+
+async function handleListChats(msg) {
+    const requestId = msg.requestId;
+    try {
+        const result = [];
+        for (const char of characters) {
+            if (!char || !char.avatar) continue;
+            const response = await fetch('/api/chats/search', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ query: '', avatar_url: char.avatar }),
+            });
+            if (!response.ok) continue;
+            const chats = await response.json();
+            for (const chat of chats) {
+                // file_name is like "CharName - timestamp.jsonl", strip .jsonl
+                const chatId = chat.file_name?.replace(/\.jsonl$/, '') || '';
+                if (!chatId) continue;
+                result.push({
+                    chatId,
+                    characterName: char.name,
+                    messageCount: chat.message_count || 0,
+                    lastMessage: chat.last_mes || '',
+                });
+            }
+        }
+        sendToKoishi({ type: 'list_chats_result', requestId, chats: result });
+    } catch (e) {
+        sendToKoishi({ type: 'list_chats_result', requestId, chats: [], error: e.message });
     }
 }
 
