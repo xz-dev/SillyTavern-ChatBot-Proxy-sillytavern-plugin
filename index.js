@@ -1,13 +1,14 @@
 // SillyTavern Koishi Bridge - Client Extension
 // Bridges SillyTavern chats to Koishi bot channels via WebSocket.
 
-import { getContext, extension_settings, saveSettingsDebounced } from '../../../extensions.js';
+import { getContext, extension_settings } from '../../../extensions.js';
 import {
     eventSource,
     event_types,
     sendMessageAsUser,
     Generate,
     getRequestHeaders,
+    saveSettingsDebounced,
 } from '../../../../script.js';
 
 // Derive extension folder URL for loading templates
