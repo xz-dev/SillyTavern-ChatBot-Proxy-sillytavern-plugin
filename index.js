@@ -9,6 +9,9 @@ import {
     Generate,
     getRequestHeaders,
     saveSettingsDebounced,
+    openCharacterChat,
+    characters,
+    this_chid,
 } from '../../../../script.js';
 
 // Derive extension folder URL for loading templates
@@ -240,14 +243,23 @@ async function handleKoishiMessage(msg) {
 
 async function handleSendMessage(msg) {
     const context = getContext();
+    const currentChatId = context.chatId;
+    const needsSwitch = currentChatId !== msg.chatId;
 
-    // Check if the current chat matches
-    if (context.chatId !== msg.chatId) {
-        log(`Chat ID mismatch: current=${context.chatId}, requested=${msg.chatId}`, 'warn');
-        return;
+    log(`Forwarding message from ${msg.senderName} via ${msg.sourceChannelKey}${needsSwitch ? ` (switching from ${currentChatId})` : ''}`);
+
+    // Auto-switch to target chat if needed
+    if (needsSwitch) {
+        try {
+            // chatId format: "CharName - timestamp" → we need the .jsonl filename
+            const chatFileName = msg.chatId + '.jsonl';
+            await openCharacterChat(chatFileName);
+            log(`Switched to chat: ${msg.chatId}`);
+        } catch (e) {
+            log(`Failed to switch chat: ${e.message}`, 'error');
+            return;
+        }
     }
-
-    log(`Forwarding message from ${msg.senderName} via ${msg.sourceChannelKey}`);
 
     // Mark the source so we can tag the outgoing user_message
     pendingSourceChannelKey = msg.sourceChannelKey;
@@ -264,14 +276,31 @@ async function handleSendMessage(msg) {
             pendingSourceChannelKey = null;
         }, 5000);
     }
+
+    // Switch back to original chat if we switched away
+    if (needsSwitch && currentChatId) {
+        try {
+            const originalFileName = currentChatId + '.jsonl';
+            await openCharacterChat(originalFileName);
+            log(`Switched back to: ${currentChatId}`);
+        } catch (e) {
+            log(`Failed to switch back: ${e.message}`, 'warn');
+        }
+    }
 }
 
 async function handleSendFile(msg) {
     const context = getContext();
+    const currentChatId = context.chatId;
+    const needsSwitch = currentChatId !== msg.chatId;
 
-    if (context.chatId !== msg.chatId) {
-        log(`Chat ID mismatch for file: current=${context.chatId}, requested=${msg.chatId}`, 'warn');
-        return;
+    if (needsSwitch) {
+        try {
+            await openCharacterChat(msg.chatId + '.jsonl');
+        } catch (e) {
+            log(`Failed to switch chat for file: ${e.message}`, 'error');
+            return;
+        }
     }
 
     log(`Forwarding file ${msg.file.name} from ${msg.senderName}`);
