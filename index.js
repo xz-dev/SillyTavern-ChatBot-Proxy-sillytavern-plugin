@@ -39,6 +39,7 @@ const DEFAULT_SETTINGS = {
     forwardTts: true,
     forwardImages: true,
     forwardImageDescriptions: false,
+    removeImageArtifacts: true,
     autoReconnectApi: true,
 };
 
@@ -676,6 +677,11 @@ async function forwardCharacterMessage(messageId) {
         images: [],
     };
 
+    // Remove artifacts from image generation that the AI accidentally included in normal text
+    if (settings.removeImageArtifacts) {
+        content.text = content.text.replace(/\n?\[[^\]]*sends a picture that contains:[^\]]*\]\.?/gi, '');
+    }
+
     // If this is an image generation message and forwardImageDescriptions is false, clear the text
     if (!settings.forwardImageDescriptions && message.extra?.media?.length) {
         content.text = '';
@@ -1107,6 +1113,7 @@ async function initUI() {
     const forwardTtsInput = document.getElementById('koishi_bridge_forward_tts');
     const forwardImagesInput = document.getElementById('koishi_bridge_forward_images');
     const forwardImageDescriptionsInput = document.getElementById('koishi_bridge_forward_image_descriptions');
+    const removeImageArtifactsInput = document.getElementById('koishi_bridge_remove_image_artifacts');
     const autoReconnectApiInput = document.getElementById('koishi_bridge_auto_reconnect_api');
 
     if (wsUrlInput) wsUrlInput.value = settings.wsUrl;
@@ -1117,6 +1124,7 @@ async function initUI() {
     if (forwardTtsInput) forwardTtsInput.checked = settings.forwardTts;
     if (forwardImagesInput) forwardImagesInput.checked = settings.forwardImages;
     if (forwardImageDescriptionsInput) forwardImageDescriptionsInput.checked = settings.forwardImageDescriptions;
+    if (removeImageArtifactsInput) removeImageArtifactsInput.checked = settings.removeImageArtifacts;
     if (autoReconnectApiInput) autoReconnectApiInput.checked = settings.autoReconnectApi;
 
     // Bind change events
@@ -1157,6 +1165,11 @@ async function initUI() {
 
     forwardImageDescriptionsInput?.addEventListener('change', () => {
         settings.forwardImageDescriptions = forwardImageDescriptionsInput.checked;
+        saveSettings();
+    });
+
+    removeImageArtifactsInput?.addEventListener('change', () => {
+        settings.removeImageArtifacts = removeImageArtifactsInput.checked;
         saveSettings();
     });
 
