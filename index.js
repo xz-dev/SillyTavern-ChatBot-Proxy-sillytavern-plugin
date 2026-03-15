@@ -614,9 +614,22 @@ async function onUserMessageRendered(messageId) {
         files: [],
     };
 
-    // Extract images from message if enabled
-    if (settings.forwardImages) {
-        content.images = await extractImagesFromRenderedMessage(messageId);
+    // Extract images from message.extra.media if enabled
+    if (settings.forwardImages && message.extra?.media?.length) {
+        for (const attachment of message.extra.media) {
+            if (!attachment.url) continue;
+            try {
+                const response = await fetch(attachment.url);
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const buffer = await blob.arrayBuffer();
+                    const base64 = arrayBufferToBase64(buffer);
+                    content.images.push({ data: base64, mimeType: blob.type || 'image/jpeg' });
+                }
+            } catch (e) {
+                log(`Failed to fetch user media: ${e.message}`, 'warn');
+            }
+        }
     }
 
     if (!content.text && content.images.length === 0) return;
@@ -652,6 +665,8 @@ async function onCharacterMessageRendered(messageId) {
     // Skip user messages
     if (message.is_user) return;
 
+    log(`CHARACTER_MESSAGE_RENDERED #${messageId}: name=${message.name}, is_system=${message.is_system}, media=${message.extra?.media?.length || 0}`);
+
     lastAiMessageId = messageId;
 
     const content = {
@@ -659,31 +674,39 @@ async function onCharacterMessageRendered(messageId) {
         images: [],
     };
 
-    // Extract images from rendered message
-    if (settings.forwardImages) {
-        content.images = await extractImagesFromRenderedMessage(messageId);
+    // Extract images from message.extra.media (standard location for SD-generated images)
+    if (settings.forwardImages && message.extra?.media?.length) {
+        for (const attachment of message.extra.media) {
+            if (!attachment.url) continue;
+            try {
+                const response = await fetch(attachment.url);
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const buffer = await blob.arrayBuffer();
+                    const base64 = arrayBufferToBase64(buffer);
+                    content.images.push({
+                        data: base64,
+                        mimeType: blob.type || 'image/jpeg',
+                    });
+                }
+            } catch (e) {
+                log(`Failed to fetch media: ${e.message}`, 'warn');
+            }
+        }
     }
 
     if (!content.text && content.images.length === 0) return;
 
     const sent = sendToKoishi({
         type: 'ai_message',
-        chatId: getContext().chatId,
+        chatId: context.chatId,
         characterName: context.name2,
         content,
         timestamp: Date.now(),
     });
 
     if (sent) {
-        log(`Forwarded AI message (${content.text.substring(0, 50)}...)`);
-    }
-
-    // Watch for images that may be inserted later (SD generation via tool call)
-    if (settings.forwardImages) {
-        const mesElement = document.querySelector(`#chat .mes[mesid="${messageId}"]`);
-        if (mesElement) {
-            watchForImages(mesElement);
-        }
+        log(`Forwarded AI message (${content.text.substring(0, 50)}...) [images: ${content.images.length}]`);
     }
 }
 
@@ -917,130 +940,6 @@ function arrayBufferToBase64(buffer) {
         binary += String.fromCharCode.apply(null, chunk);
     }
     return btoa(binary);
-}
-
-// ============================================================
-// Image Extraction
-// ============================================================
-
-async function extractImagesFromRenderedMessage(messageId) {
-    const images = [];
-    try {
-        const mesElement = document.querySelector(`#chat .mes[mesid="${messageId}"]`);
-        if (!mesElement) return images;
-
-        // Search both inline text images and SD-generated images in img_container
-        const imgElements = mesElement.querySelectorAll('.mes_text img, .mes_img_container img');
-        for (const img of imgElements) {
-            const src = img.getAttribute('src') || img.src || '';
-            if (!src) continue;
-
-            if (src.startsWith('data:')) {
-                // Already base64
-                const match = src.match(/^data:(.*?);base64,(.*)$/);
-                if (match) {
-                    images.push({ data: match[2], mimeType: match[1] });
-                }
-            } else if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('/')) {
-                // HTTP URL image — fetch and convert to base64
-                try {
-                    const response = await fetch(src);
-                    if (response.ok) {
-                        const blob = await response.blob();
-                        const mimeType = blob.type || 'image/jpeg';
-                        const buffer = await blob.arrayBuffer();
-                        const base64 = arrayBufferToBase64(buffer);
-                        images.push({ data: base64, mimeType });
-                    }
-                } catch (e) {
-                    log(`Failed to fetch image ${src}: ${e.message}`, 'warn');
-                }
-            }
-        }
-    } catch (e) {
-        log(`Image extraction error: ${e.message}`, 'warn');
-    }
-    return images;
-}
-
-// ============================================================
-// Per-message Image Observer
-// Watches a single .mes element for img.mes_img insertion.
-// Called from onCharacterMessageRendered to catch SD-generated
-// images that are inserted after the text is rendered.
-// ============================================================
-
-function watchForImages(mesElement) {
-    // Check if image already exists
-    const existingImg = mesElement.querySelector('img.mes_img[src]:not([src=""])');
-    if (existingImg && existingImg.src) {
-        forwardImage(existingImg);
-        return;
-    }
-
-    // Not yet — observe this message for img insertion / src change
-    const observer = new MutationObserver(() => {
-        const img = mesElement.querySelector('img.mes_img[src]:not([src=""])');
-        if (img && img.src && !img.src.endsWith('#')) {
-            observer.disconnect();
-            forwardImage(img);
-        }
-    });
-
-    observer.observe(mesElement, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ['src'],
-    });
-
-    // Timeout: give up after 30s
-    setTimeout(() => observer.disconnect(), 30000);
-}
-
-async function forwardImage(img) {
-    const src = img.src || img.getAttribute('src') || '';
-    if (!src || src.endsWith('#')) return;
-
-    // Use title (prompt description) as caption, fallback to alt
-    const caption = img.getAttribute('title') || img.getAttribute('alt') || '';
-
-    try {
-        let imageData = null;
-
-        if (src.startsWith('data:')) {
-            const match = src.match(/^data:(.*?);base64,(.*)$/);
-            if (match) {
-                imageData = { data: match[2], mimeType: match[1] };
-            }
-        } else {
-            const response = await fetch(src);
-            if (response.ok) {
-                const blob = await response.blob();
-                const mimeType = blob.type || 'image/jpeg';
-                const buffer = await blob.arrayBuffer();
-                const base64 = arrayBufferToBase64(buffer);
-                imageData = { data: base64, mimeType };
-            }
-        }
-
-        if (imageData) {
-            const context = getContext();
-            sendToKoishi({
-                type: 'ai_message',
-                chatId: context.chatId,
-                characterName: context.name2,
-                content: {
-                    text: caption,
-                    images: [imageData],
-                },
-                timestamp: Date.now(),
-            });
-            log(`Forwarded AI image`);
-        }
-    } catch (e) {
-        log(`Failed to forward image: ${e.message}`, 'warn');
-    }
 }
 
 // ============================================================
