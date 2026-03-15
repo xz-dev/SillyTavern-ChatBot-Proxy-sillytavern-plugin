@@ -649,8 +649,8 @@ async function onCharacterMessageRendered(messageId) {
     const message = context.chat?.[messageId];
     if (!message) return;
 
-    // Skip system messages and user messages
-    if (message.is_system || message.is_user) return;
+    // Skip user messages
+    if (message.is_user) return;
 
     lastAiMessageId = messageId;
 
