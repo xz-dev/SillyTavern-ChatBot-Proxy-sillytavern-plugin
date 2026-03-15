@@ -37,6 +37,7 @@ const DEFAULT_SETTINGS = {
     forwardAi: true,
     forwardTts: true,
     forwardImages: true,
+    autoReconnectApi: true,
 };
 
 // ============================================================
@@ -916,6 +917,7 @@ async function initUI() {
     const forwardAiInput = document.getElementById('koishi_bridge_forward_ai');
     const forwardTtsInput = document.getElementById('koishi_bridge_forward_tts');
     const forwardImagesInput = document.getElementById('koishi_bridge_forward_images');
+    const autoReconnectApiInput = document.getElementById('koishi_bridge_auto_reconnect_api');
 
     if (wsUrlInput) wsUrlInput.value = settings.wsUrl;
     if (apiKeyInput) apiKeyInput.value = settings.apiKey;
@@ -924,6 +926,7 @@ async function initUI() {
     if (forwardAiInput) forwardAiInput.checked = settings.forwardAi;
     if (forwardTtsInput) forwardTtsInput.checked = settings.forwardTts;
     if (forwardImagesInput) forwardImagesInput.checked = settings.forwardImages;
+    if (autoReconnectApiInput) autoReconnectApiInput.checked = settings.autoReconnectApi;
 
     // Bind change events
     wsUrlInput?.addEventListener('input', () => {
@@ -958,6 +961,11 @@ async function initUI() {
 
     forwardImagesInput?.addEventListener('change', () => {
         settings.forwardImages = forwardImagesInput.checked;
+        saveSettings();
+    });
+
+    autoReconnectApiInput?.addEventListener('change', () => {
+        settings.autoReconnectApi = autoReconnectApiInput.checked;
         saveSettings();
     });
 
@@ -1007,7 +1015,7 @@ function registerEvents() {
 
     // Auto-reconnect API when connection drops
     eventSource.on(event_types.ONLINE_STATUS_CHANGED, (status) => {
-        if (status === 'no_connection') {
+        if (status === 'no_connection' && getSettings().autoReconnectApi) {
             log('API disconnected, reconnecting...');
             const buttonMap = {
                 'kobold': '#api_button',
