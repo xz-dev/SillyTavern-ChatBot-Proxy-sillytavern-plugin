@@ -696,6 +696,107 @@ async function extractImagesFromRenderedMessage(messageId) {
 }
 
 // ============================================================
+// Image Insertion Observer
+// Watches for SD-generated images being inserted into AI messages
+// after CHARACTER_MESSAGE_RENDERED has already fired.
+// ============================================================
+
+let imageObserver = null;
+
+function setupImageObserver() {
+    const chatElement = document.getElementById('chat');
+    if (!chatElement) {
+        // Retry until #chat exists
+        setTimeout(setupImageObserver, 2000);
+        return;
+    }
+
+    if (imageObserver) {
+        imageObserver.disconnect();
+    }
+
+    imageObserver = new MutationObserver((mutations) => {
+        const settings = getSettings();
+        if (!settings.forwardImages || !isConnected) return;
+
+        for (const mutation of mutations) {
+            for (const node of mutation.addedNodes) {
+                if (!(node instanceof HTMLElement)) continue;
+
+                // Check if an img was added inside a mes_img_container
+                const imgs = node.matches?.('img.mes_img') ? [node] :
+                    node.querySelectorAll?.('img.mes_img') || [];
+
+                for (const img of imgs) {
+                    // Find the parent message element
+                    const mesElement = img.closest('.mes');
+                    if (!mesElement) continue;
+
+                    // Only forward AI messages (not user messages)
+                    if (mesElement.getAttribute('is_user') === 'true') continue;
+
+                    const src = img.getAttribute('src') || img.src || '';
+                    if (!src) continue;
+
+                    // Debounce: skip if src is a placeholder or empty
+                    if (src.includes('placeholder') || src.endsWith('#')) continue;
+
+                    log(`Image inserted in message, forwarding...`);
+
+                    // Fetch and forward asynchronously
+                    (async () => {
+                        try {
+                            let imageData = null;
+                            if (src.startsWith('data:')) {
+                                const match = src.match(/^data:(.*?);base64,(.*)$/);
+                                if (match) {
+                                    imageData = { data: match[2], mimeType: match[1] };
+                                }
+                            } else if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('/')) {
+                                const response = await fetch(src);
+                                if (response.ok) {
+                                    const blob = await response.blob();
+                                    const mimeType = blob.type || 'image/jpeg';
+                                    const buffer = await blob.arrayBuffer();
+                                    const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+                                    imageData = { data: base64, mimeType };
+                                }
+                            }
+
+                            if (imageData) {
+                                // Use the image alt text as description
+                                const altText = img.getAttribute('alt') || '';
+                                const context = getContext();
+                                sendToKoishi({
+                                    type: 'ai_message',
+                                    chatId: context.chatId,
+                                    characterName: context.name2,
+                                    content: {
+                                        text: altText,
+                                        images: [imageData],
+                                    },
+                                    timestamp: Date.now(),
+                                });
+                                log(`Forwarded AI image (${altText.substring(0, 50)}...)`);
+                            }
+                        } catch (e) {
+                            log(`Failed to forward inserted image: ${e.message}`, 'warn');
+                        }
+                    })();
+                }
+            }
+        }
+    });
+
+    imageObserver.observe(chatElement, {
+        childList: true,
+        subtree: true,
+    });
+
+    log('Image observer set up on #chat');
+}
+
+// ============================================================
 // TTS Audio Capture
 // ============================================================
 
@@ -913,8 +1014,9 @@ jQuery(async () => {
     // Register event listeners
     registerEvents();
 
-    // Setup TTS capture
+    // Setup TTS capture and image observer
     setupTtsCapture();
+    setupImageObserver();
 
     // Update chat ID display immediately (in case chat was already loaded before extension)
     setTimeout(updateChatIdDisplay, 500);
