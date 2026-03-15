@@ -38,6 +38,7 @@ const DEFAULT_SETTINGS = {
     forwardAi: true,
     forwardTts: true,
     forwardImages: true,
+    forwardImageDescriptions: false,
     autoReconnectApi: true,
 };
 
@@ -675,6 +676,11 @@ async function forwardCharacterMessage(messageId) {
         images: [],
     };
 
+    // If this is an image generation message and forwardImageDescriptions is false, clear the text
+    if (!settings.forwardImageDescriptions && message.extra?.media?.length) {
+        content.text = '';
+    }
+
     // Extract images from message.extra.media (standard location for SD-generated images)
     if (settings.forwardImages && message.extra?.media?.length) {
         for (const attachment of message.extra.media) {
@@ -1100,6 +1106,7 @@ async function initUI() {
     const forwardAiInput = document.getElementById('koishi_bridge_forward_ai');
     const forwardTtsInput = document.getElementById('koishi_bridge_forward_tts');
     const forwardImagesInput = document.getElementById('koishi_bridge_forward_images');
+    const forwardImageDescriptionsInput = document.getElementById('koishi_bridge_forward_image_descriptions');
     const autoReconnectApiInput = document.getElementById('koishi_bridge_auto_reconnect_api');
 
     if (wsUrlInput) wsUrlInput.value = settings.wsUrl;
@@ -1109,6 +1116,7 @@ async function initUI() {
     if (forwardAiInput) forwardAiInput.checked = settings.forwardAi;
     if (forwardTtsInput) forwardTtsInput.checked = settings.forwardTts;
     if (forwardImagesInput) forwardImagesInput.checked = settings.forwardImages;
+    if (forwardImageDescriptionsInput) forwardImageDescriptionsInput.checked = settings.forwardImageDescriptions;
     if (autoReconnectApiInput) autoReconnectApiInput.checked = settings.autoReconnectApi;
 
     // Bind change events
@@ -1144,6 +1152,11 @@ async function initUI() {
 
     forwardImagesInput?.addEventListener('change', () => {
         settings.forwardImages = forwardImagesInput.checked;
+        saveSettings();
+    });
+
+    forwardImageDescriptionsInput?.addEventListener('change', () => {
+        settings.forwardImageDescriptions = forwardImageDescriptionsInput.checked;
         saveSettings();
     });
 
@@ -1222,6 +1235,25 @@ function registerEvents() {
         }
     });
 }
+
+// ============================================================
+// Monkey-patch to fix TTS queue getting stuck on autoplay blocks
+// ============================================================
+const originalPlay = HTMLMediaElement.prototype.play;
+HTMLMediaElement.prototype.play = function() {
+    const playPromise = originalPlay.apply(this, arguments);
+    if (playPromise !== undefined) {
+        playPromise.catch(error => {
+            if (error.name === 'NotAllowedError') {
+                log('Browser blocked audio autoplay. Faking playback to prevent TTS queue from getting stuck.', 'warn');
+                setTimeout(() => {
+                    this.dispatchEvent(new Event('ended'));
+                }, 100);
+            }
+        });
+    }
+    return playPromise;
+};
 
 // ============================================================
 // Entry Point
