@@ -544,7 +544,7 @@ async function handleSendFile(msg) {
 // ST Event Handlers: ST → Koishi
 // ============================================================
 
-function onUserMessageRendered(messageId) {
+async function onUserMessageRendered(messageId) {
     const settings = getSettings();
     if (!settings.forwardUser || !isConnected) return;
 
@@ -566,7 +566,7 @@ function onUserMessageRendered(messageId) {
 
     // Extract images from message if enabled
     if (settings.forwardImages) {
-        content.images = extractImagesFromRenderedMessage(messageId);
+        content.images = await extractImagesFromRenderedMessage(messageId);
     }
 
     if (!content.text && content.images.length === 0) return;
@@ -591,7 +591,7 @@ function onUserMessageRendered(messageId) {
     lastAiMessageId = null;
 }
 
-function onCharacterMessageRendered(messageId) {
+async function onCharacterMessageRendered(messageId) {
     const settings = getSettings();
     if (!settings.forwardAi || !isConnected) return;
 
@@ -611,7 +611,7 @@ function onCharacterMessageRendered(messageId) {
 
     // Extract images from rendered message
     if (settings.forwardImages) {
-        content.images = extractImagesFromRenderedMessage(messageId);
+        content.images = await extractImagesFromRenderedMessage(messageId);
     }
 
     if (!content.text && content.images.length === 0) return;
@@ -655,24 +655,39 @@ function onGenerationEnded() {
 // Image Extraction
 // ============================================================
 
-function extractImagesFromRenderedMessage(messageId) {
+async function extractImagesFromRenderedMessage(messageId) {
     const images = [];
     try {
         const mesElement = document.querySelector(`#chat .mes[mesid="${messageId}"]`);
         if (!mesElement) return images;
 
-        const imgElements = mesElement.querySelectorAll('.mes_text img');
+        // Search both inline text images and SD-generated images in img_container
+        const imgElements = mesElement.querySelectorAll('.mes_text img, .mes_img_container img');
         for (const img of imgElements) {
-            const src = img.getAttribute('src') || '';
+            const src = img.getAttribute('src') || img.src || '';
+            if (!src) continue;
+
             if (src.startsWith('data:')) {
                 // Already base64
                 const match = src.match(/^data:(.*?);base64,(.*)$/);
                 if (match) {
                     images.push({ data: match[2], mimeType: match[1] });
                 }
+            } else if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('/')) {
+                // HTTP URL image — fetch and convert to base64
+                try {
+                    const response = await fetch(src);
+                    if (response.ok) {
+                        const blob = await response.blob();
+                        const mimeType = blob.type || 'image/jpeg';
+                        const buffer = await blob.arrayBuffer();
+                        const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+                        images.push({ data: base64, mimeType });
+                    }
+                } catch (e) {
+                    log(`Failed to fetch image ${src}: ${e.message}`, 'warn');
+                }
             }
-            // For URL images, we'd need to fetch them — skip for now to avoid complexity
-            // TODO: fetch URL images and convert to base64
         }
     } catch (e) {
         log(`Image extraction error: ${e.message}`, 'warn');
