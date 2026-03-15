@@ -104,6 +104,10 @@ let ttsObserver = null;
 const MAX_RECONNECT_DELAY = 30000;
 const messageQueue = [];
 
+// Incoming message queue for serial processing (prevents concurrent Generate() calls)
+const incomingQueue = [];
+let isProcessingIncoming = false;
+
 // ============================================================
 // Settings Management
 // ============================================================
@@ -301,10 +305,8 @@ function flushQueue() {
 async function handleKoishiMessage(msg) {
     switch (msg.type) {
         case 'send_message':
-            await handleSendMessage(msg);
-            break;
         case 'send_file':
-            await handleSendFile(msg);
+            enqueueIncoming(msg);
             break;
         case 'validate_chat':
             await handleValidateChat(msg);
@@ -315,6 +317,31 @@ async function handleKoishiMessage(msg) {
         default:
             log(`Unknown message type: ${msg.type}`, 'warn');
     }
+}
+
+/** Enqueue incoming send_message/send_file for serial processing */
+function enqueueIncoming(msg) {
+    incomingQueue.push(msg);
+    if (!isProcessingIncoming) {
+        processIncomingQueue();
+    }
+}
+
+async function processIncomingQueue() {
+    isProcessingIncoming = true;
+    while (incomingQueue.length > 0) {
+        const msg = incomingQueue.shift();
+        try {
+            if (msg.type === 'send_message') {
+                await handleSendMessage(msg);
+            } else if (msg.type === 'send_file') {
+                await handleSendFile(msg);
+            }
+        } catch (e) {
+            log(`Error processing queued message: ${e.message}`, 'error');
+        }
+    }
+    isProcessingIncoming = false;
 }
 
 async function handleValidateChat(msg) {
