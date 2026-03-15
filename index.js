@@ -315,6 +315,9 @@ async function handleKoishiMessage(msg) {
         case 'list_chats':
             await handleListChats(msg);
             break;
+        case 'get_avatar':
+            await handleGetAvatar(msg);
+            break;
         default:
             log(`Unknown message type: ${msg.type}`, 'warn');
     }
@@ -421,6 +424,33 @@ async function handleListChats(msg) {
     }
 }
 
+async function handleGetAvatar(msg) {
+    const requestId = msg.requestId;
+    const charName = msg.characterName;
+
+    try {
+        const char = characters.find(c => c.name === charName);
+        if (!char || !char.avatar) {
+            sendToKoishi({ type: 'get_avatar_result', requestId, avatar: null, error: `Character "${charName}" not found` });
+            return;
+        }
+
+        // Fetch the character's avatar thumbnail
+        const response = await fetch(`/thumbnail?type=avatar&file=${encodeURIComponent(char.avatar)}`);
+        if (response.ok) {
+            const blob = await response.blob();
+            const buffer = await blob.arrayBuffer();
+            const base64 = arrayBufferToBase64(buffer);
+            const mimeType = blob.type || 'image/png';
+            sendToKoishi({ type: 'get_avatar_result', requestId, avatar: base64, mimeType });
+        } else {
+            sendToKoishi({ type: 'get_avatar_result', requestId, avatar: null, error: 'Failed to fetch avatar' });
+        }
+    } catch (e) {
+        sendToKoishi({ type: 'get_avatar_result', requestId, avatar: null, error: e.message });
+    }
+}
+
 async function handleSendMessage(msg) {
     const context = getContext();
     const currentChatId = context.chatId;
@@ -498,36 +528,54 @@ async function handleSendFile(msg) {
         }
     }
 
-    log(`Forwarding file ${msg.file.name} from ${msg.senderName}`);
+    log(`Forwarding file ${msg.file.name} (${msg.file.mimeType}) from ${msg.senderName}`);
 
     pendingSourceChannelKey = msg.sourceChannelKey;
 
     try {
-        // Upload via the ST file upload API (JSON body with base64 data)
-        const headers = getRequestHeaders();
-
-        const response = await fetch('/api/files/upload', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({
-                name: msg.file.name,
-                data: `data:${msg.file.mimeType};base64,${msg.file.data}`,
-            }),
-        });
-
-        if (!response.ok) {
-            log(`File upload failed: ${response.status}`, 'error');
-            sendToKoishi({
-                type: 'send_message_result',
-                sourceChannelKey: msg.sourceChannelKey,
-                success: false,
-                error: `File upload failed: HTTP ${response.status}`,
-            });
+        if (msg.file.mimeType.startsWith('audio/')) {
+            // Audio file → STT transcription → send as text message
+            log('Audio file detected, transcribing...');
+            const transcript = await transcribeAudio(msg.file.data, msg.file.mimeType);
+            if (transcript) {
+                log(`Transcribed: "${transcript.substring(0, 50)}..."`);
+                await sendMessageAsUser(transcript);
+                await Generate('normal');
+            } else {
+                log('Transcription returned empty', 'warn');
+                sendToKoishi({
+                    type: 'send_message_result',
+                    sourceChannelKey: msg.sourceChannelKey,
+                    success: false,
+                    error: 'Failed to transcribe audio (empty result)',
+                });
+            }
         } else {
-            log(`File uploaded: ${msg.file.name}`);
+            // Non-audio file → upload via ST file API
+            const headers = getRequestHeaders();
+            const response = await fetch('/api/files/upload', {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                    name: msg.file.name,
+                    data: `data:${msg.file.mimeType};base64,${msg.file.data}`,
+                }),
+            });
+
+            if (!response.ok) {
+                log(`File upload failed: ${response.status}`, 'error');
+                sendToKoishi({
+                    type: 'send_message_result',
+                    sourceChannelKey: msg.sourceChannelKey,
+                    success: false,
+                    error: `File upload failed: HTTP ${response.status}`,
+                });
+            } else {
+                log(`File uploaded: ${msg.file.name}`);
+            }
         }
     } catch (e) {
-        log(`Failed to upload file: ${e.message}`, 'error');
+        log(`Failed to handle file: ${e.message}`, 'error');
         sendToKoishi({
             type: 'send_message_result',
             sourceChannelKey: msg.sourceChannelKey,
@@ -658,6 +706,200 @@ function onGenerationEnded() {
         type: 'generation_ended',
         chatId: getContext().chatId,
     });
+}
+
+// ============================================================
+// Audio STT (Speech-to-Text)
+// Replicates the flow from Extension-Speech-Recognition:
+// audio data → decode → WAV conversion → POST to STT endpoint
+// ============================================================
+
+/** Map of STT provider names to their API endpoints */
+const STT_PROVIDER_ENDPOINTS = {
+    'Groq': '/api/openai/groq/transcribe-audio',
+    'OpenAI': '/api/openai/transcribe-audio',
+    'Whisper (OpenAI)': '/api/openai/transcribe-audio',
+    'MistralAI': '/api/openai/mistral/transcribe-audio',
+    'Z.AI': '/api/openai/zai/transcribe-audio',
+    'Chutes': '/api/openai/chutes/transcribe-audio',
+    'KoboldCpp': '/api/backends/kobold/transcribe-audio',
+    'ElevenLabs': '/api/speech/elevenlabs/recognize',
+    'Whisper (Local)': '/api/speech/recognize',
+    'Whisper (Extras)': '/api/speech/recognize',
+};
+
+/**
+ * Transcribe audio data to text using the configured STT provider.
+ * @param {string} base64Data - Base64-encoded audio data
+ * @param {string} mimeType - Audio MIME type
+ * @returns {Promise<string|null>} Transcribed text or null on failure
+ */
+async function transcribeAudio(base64Data, mimeType) {
+    const sttSettings = extension_settings?.speech_recognition || {};
+    const provider = sttSettings.currentProvider || 'None';
+
+    if (provider === 'None' || provider === 'Browser' || provider === 'Streaming') {
+        log(`STT provider "${provider}" cannot transcribe audio files`, 'warn');
+        return null;
+    }
+
+    const endpoint = STT_PROVIDER_ENDPOINTS[provider];
+    if (!endpoint) {
+        log(`Unknown STT provider: ${provider}`, 'warn');
+        return null;
+    }
+
+    const providerSettings = sttSettings[provider] || {};
+    const model = providerSettings.model || '';
+    const language = providerSettings.language || '';
+
+    try {
+        // Decode base64 → ArrayBuffer → AudioBuffer → WAV (same as STT extension)
+        const byteString = atob(base64Data);
+        const ab = new ArrayBuffer(byteString.length);
+        const ia = new Uint8Array(ab);
+        for (let i = 0; i < byteString.length; i++) {
+            ia[i] = byteString.charCodeAt(i);
+        }
+        const audioBlob = new Blob([ab], { type: mimeType });
+
+        // Decode to AudioBuffer then convert to WAV (replicating STT extension behavior)
+        const arrayBuffer = await audioBlob.arrayBuffer();
+        const audioContext = new AudioContext();
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        const wavBlob = await convertAudioBufferToWavBlob(audioBuffer);
+
+        // For local whisper endpoint, send as JSON with base64 data URI
+        if (endpoint === '/api/speech/recognize') {
+            const wavArrayBuffer = await wavBlob.arrayBuffer();
+            const wavBase64 = arrayBufferToBase64(wavArrayBuffer);
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    audio: `data:audio/wav;base64,${wavBase64}`,
+                    lang: language,
+                    model: model,
+                }),
+            });
+            if (response.ok) {
+                const result = await response.json();
+                return result.text || null;
+            }
+            log(`STT API error: ${response.status}`, 'warn');
+            return null;
+        }
+
+        // For all other providers, send as FormData (same as stt-base.js processAudio)
+        const formData = new FormData();
+        formData.append('avatar', wavBlob, 'record.wav');
+        if (model) formData.append('model', model);
+        if (language) formData.append('language', language);
+
+        const headers = getRequestHeaders();
+        delete headers['Content-Type']; // Let browser set multipart boundary
+
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers,
+            body: formData,
+        });
+
+        if (response.ok) {
+            const result = await response.json();
+            return result.text || null;
+        }
+        log(`STT API error: ${response.status} ${await response.text()}`, 'warn');
+        return null;
+    } catch (e) {
+        log(`Transcription error: ${e.message}`, 'error');
+        return null;
+    }
+}
+
+/**
+ * Convert AudioBuffer to WAV Blob using a Web Worker.
+ * Replicates convertAudioBufferToWavBlob from Extension-Speech-Recognition.
+ */
+function convertAudioBufferToWavBlob(audioBuffer) {
+    return new Promise((resolve) => {
+        // Try to use the STT extension's wave-worker if available
+        const workerPaths = [
+            '/scripts/extensions/third-party/Extension-Speech-Recognition/wave-worker.js',
+            '/scripts/extensions/Extension-Speech-Recognition/wave-worker.js',
+        ];
+
+        // Try each path
+        function tryWorker(index) {
+            if (index >= workerPaths.length) {
+                // Fallback: manual WAV conversion without Web Worker
+                resolve(manualWavConvert(audioBuffer));
+                return;
+            }
+            try {
+                const worker = new Worker(workerPaths[index]);
+                worker.onmessage = function (e) {
+                    resolve(new Blob([e.data.buffer], { type: 'audio/wav' }));
+                    worker.terminate();
+                };
+                worker.onerror = function () {
+                    worker.terminate();
+                    tryWorker(index + 1);
+                };
+                let pcmArrays = [];
+                for (let i = 0; i < audioBuffer.numberOfChannels; i++) {
+                    pcmArrays.push(audioBuffer.getChannelData(i));
+                }
+                worker.postMessage({
+                    pcmArrays,
+                    config: { sampleRate: audioBuffer.sampleRate },
+                });
+            } catch {
+                tryWorker(index + 1);
+            }
+        }
+        tryWorker(0);
+    });
+}
+
+/**
+ * Fallback manual WAV conversion if Web Worker is not available.
+ */
+function manualWavConvert(audioBuffer) {
+    const numChannels = 1; // mono
+    const sampleRate = audioBuffer.sampleRate;
+    const samples = audioBuffer.getChannelData(0);
+    const dataLength = samples.length * 2; // 16-bit
+    const buffer = new ArrayBuffer(44 + dataLength);
+    const view = new DataView(buffer);
+
+    // WAV header
+    const writeString = (offset, str) => {
+        for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+    };
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + dataLength, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * numChannels * 2, true);
+    view.setUint16(32, numChannels * 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, 'data');
+    view.setUint32(40, dataLength, true);
+
+    // PCM data
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++) {
+        const s = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        offset += 2;
+    }
+
+    return new Blob([buffer], { type: 'audio/wav' });
 }
 
 // ============================================================
