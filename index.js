@@ -627,6 +627,14 @@ async function onCharacterMessageRendered(messageId) {
     if (sent) {
         log(`Forwarded AI message (${content.text.substring(0, 50)}...)`);
     }
+
+    // Watch for images that may be inserted later (SD generation via tool call)
+    if (settings.forwardImages) {
+        const mesElement = document.querySelector(`#chat .mes[mesid="${messageId}"]`);
+        if (mesElement) {
+            watchForImages(mesElement);
+        }
+    }
 }
 
 function onGenerationStarted() {
@@ -696,104 +704,83 @@ async function extractImagesFromRenderedMessage(messageId) {
 }
 
 // ============================================================
-// Image Insertion Observer
-// Watches for SD-generated images being inserted into AI messages
-// after CHARACTER_MESSAGE_RENDERED has already fired.
+// Per-message Image Observer
+// Watches a single .mes element for img.mes_img insertion.
+// Called from onCharacterMessageRendered to catch SD-generated
+// images that are inserted after the text is rendered.
 // ============================================================
 
-let imageObserver = null;
-
-function setupImageObserver() {
-    const chatElement = document.getElementById('chat');
-    if (!chatElement) {
-        // Retry until #chat exists
-        setTimeout(setupImageObserver, 2000);
+function watchForImages(mesElement) {
+    // Check if image already exists
+    const existingImg = mesElement.querySelector('img.mes_img[src]:not([src=""])');
+    if (existingImg && existingImg.src) {
+        forwardImage(existingImg);
         return;
     }
 
-    if (imageObserver) {
-        imageObserver.disconnect();
-    }
-
-    imageObserver = new MutationObserver((mutations) => {
-        const settings = getSettings();
-        if (!settings.forwardImages || !isConnected) return;
-
-        for (const mutation of mutations) {
-            for (const node of mutation.addedNodes) {
-                if (!(node instanceof HTMLElement)) continue;
-
-                // Check if an img was added inside a mes_img_container
-                const imgs = node.matches?.('img.mes_img') ? [node] :
-                    node.querySelectorAll?.('img.mes_img') || [];
-
-                for (const img of imgs) {
-                    // Find the parent message element
-                    const mesElement = img.closest('.mes');
-                    if (!mesElement) continue;
-
-                    // Only forward AI messages (not user messages)
-                    if (mesElement.getAttribute('is_user') === 'true') continue;
-
-                    const src = img.getAttribute('src') || img.src || '';
-                    if (!src) continue;
-
-                    // Debounce: skip if src is a placeholder or empty
-                    if (src.includes('placeholder') || src.endsWith('#')) continue;
-
-                    log(`Image inserted in message, forwarding...`);
-
-                    // Fetch and forward asynchronously
-                    (async () => {
-                        try {
-                            let imageData = null;
-                            if (src.startsWith('data:')) {
-                                const match = src.match(/^data:(.*?);base64,(.*)$/);
-                                if (match) {
-                                    imageData = { data: match[2], mimeType: match[1] };
-                                }
-                            } else if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('/')) {
-                                const response = await fetch(src);
-                                if (response.ok) {
-                                    const blob = await response.blob();
-                                    const mimeType = blob.type || 'image/jpeg';
-                                    const buffer = await blob.arrayBuffer();
-                                    const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
-                                    imageData = { data: base64, mimeType };
-                                }
-                            }
-
-                            if (imageData) {
-                                // Use the image alt text as description
-                                const altText = img.getAttribute('alt') || '';
-                                const context = getContext();
-                                sendToKoishi({
-                                    type: 'ai_message',
-                                    chatId: context.chatId,
-                                    characterName: context.name2,
-                                    content: {
-                                        text: altText,
-                                        images: [imageData],
-                                    },
-                                    timestamp: Date.now(),
-                                });
-                                log(`Forwarded AI image (${altText.substring(0, 50)}...)`);
-                            }
-                        } catch (e) {
-                            log(`Failed to forward inserted image: ${e.message}`, 'warn');
-                        }
-                    })();
-                }
-            }
+    // Not yet — observe this message for img insertion / src change
+    const observer = new MutationObserver(() => {
+        const img = mesElement.querySelector('img.mes_img[src]:not([src=""])');
+        if (img && img.src && !img.src.endsWith('#')) {
+            observer.disconnect();
+            forwardImage(img);
         }
     });
 
-    imageObserver.observe(chatElement, {
+    observer.observe(mesElement, {
         childList: true,
         subtree: true,
+        attributes: true,
+        attributeFilter: ['src'],
     });
 
-    log('Image observer set up on #chat');
+    // Timeout: give up after 30s
+    setTimeout(() => observer.disconnect(), 30000);
+}
+
+async function forwardImage(img) {
+    const src = img.src || img.getAttribute('src') || '';
+    if (!src || src.endsWith('#')) return;
+
+    // Use title (prompt description) as caption, fallback to alt
+    const caption = img.getAttribute('title') || img.getAttribute('alt') || '';
+
+    try {
+        let imageData = null;
+
+        if (src.startsWith('data:')) {
+            const match = src.match(/^data:(.*?);base64,(.*)$/);
+            if (match) {
+                imageData = { data: match[2], mimeType: match[1] };
+            }
+        } else {
+            const response = await fetch(src);
+            if (response.ok) {
+                const blob = await response.blob();
+                const mimeType = blob.type || 'image/jpeg';
+                const buffer = await blob.arrayBuffer();
+                const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+                imageData = { data: base64, mimeType };
+            }
+        }
+
+        if (imageData) {
+            const context = getContext();
+            sendToKoishi({
+                type: 'ai_message',
+                chatId: context.chatId,
+                characterName: context.name2,
+                content: {
+                    text: caption,
+                    images: [imageData],
+                },
+                timestamp: Date.now(),
+            });
+            log(`Forwarded AI image`);
+        }
+    } catch (e) {
+        log(`Failed to forward image: ${e.message}`, 'warn');
+    }
 }
 
 // ============================================================
@@ -1014,9 +1001,8 @@ jQuery(async () => {
     // Register event listeners
     registerEvents();
 
-    // Setup TTS capture and image observer
+    // Setup TTS capture
     setupTtsCapture();
-    setupImageObserver();
 
     // Update chat ID display immediately (in case chat was already loaded before extension)
     setTimeout(updateChatIdDisplay, 500);
