@@ -660,6 +660,22 @@ function onGenerationEnded() {
 }
 
 // ============================================================
+// Image Helpers
+// ============================================================
+
+/** Convert ArrayBuffer to base64 string (safe for large buffers) */
+function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const chunkSize = 8192;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+        const chunk = bytes.subarray(i, i + chunkSize);
+        binary += String.fromCharCode.apply(null, chunk);
+    }
+    return btoa(binary);
+}
+
+// ============================================================
 // Image Extraction
 // ============================================================
 
@@ -689,7 +705,7 @@ async function extractImagesFromRenderedMessage(messageId) {
                         const blob = await response.blob();
                         const mimeType = blob.type || 'image/jpeg';
                         const buffer = await blob.arrayBuffer();
-                        const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+                        const base64 = arrayBufferToBase64(buffer);
                         images.push({ data: base64, mimeType });
                     }
                 } catch (e) {
@@ -759,7 +775,7 @@ async function forwardImage(img) {
                 const blob = await response.blob();
                 const mimeType = blob.type || 'image/jpeg';
                 const buffer = await blob.arrayBuffer();
-                const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+                const base64 = arrayBufferToBase64(buffer);
                 imageData = { data: base64, mimeType };
             }
         }
