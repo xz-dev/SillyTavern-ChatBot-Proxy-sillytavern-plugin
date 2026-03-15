@@ -2,6 +2,7 @@
 // Bridges SillyTavern chats to Koishi bot channels via WebSocket.
 
 import { getContext, extension_settings } from '../../../extensions.js';
+import { uploadFileAttachmentToServer } from '../../../chats.js';
 import {
     eventSource,
     event_types,
@@ -551,27 +552,27 @@ async function handleSendFile(msg) {
                 });
             }
         } else {
-            // Non-audio file → upload via ST file API
-            const headers = getRequestHeaders();
-            const response = await fetch('/api/files/upload', {
-                method: 'POST',
-                headers,
-                body: JSON.stringify({
-                    name: msg.file.name,
-                    data: `data:${msg.file.mimeType};base64,${msg.file.data}`,
-                }),
-            });
+            // Non-audio file → attach to current chat via ST attachment system
+            const byteString = atob(msg.file.data);
+            const ab = new ArrayBuffer(byteString.length);
+            const ia = new Uint8Array(ab);
+            for (let i = 0; i < byteString.length; i++) {
+                ia[i] = byteString.charCodeAt(i);
+            }
+            const blob = new Blob([ab], { type: msg.file.mimeType });
+            const file = new File([blob], msg.file.name, { type: msg.file.mimeType });
 
-            if (!response.ok) {
-                log(`File upload failed: ${response.status}`, 'error');
+            const url = await uploadFileAttachmentToServer(file, 'chat');
+            if (url) {
+                log(`File attached to chat: ${msg.file.name}`);
+            } else {
+                log(`File attachment failed: ${msg.file.name}`, 'error');
                 sendToKoishi({
                     type: 'send_message_result',
                     sourceChannelKey: msg.sourceChannelKey,
                     success: false,
-                    error: `File upload failed: HTTP ${response.status}`,
+                    error: `File attachment failed: ${msg.file.name}`,
                 });
-            } else {
-                log(`File uploaded: ${msg.file.name}`);
             }
         }
     } catch (e) {
