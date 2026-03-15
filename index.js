@@ -666,9 +666,6 @@ async function forwardCharacterMessage(messageId) {
     // Skip user messages
     if (message.is_user) return;
 
-    // Skip system messages (important for tool calls, although event listener might bypass it)
-    if (message.is_system) return;
-
     log(`CHARACTER_MESSAGE_RENDERED #${messageId}: name=${message.name}, is_system=${message.is_system}, media=${message.extra?.media?.length || 0}`);
 
     lastAiMessageId = messageId;
