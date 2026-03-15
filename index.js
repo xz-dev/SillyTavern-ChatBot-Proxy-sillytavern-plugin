@@ -587,6 +587,8 @@ function onUserMessageRendered(messageId) {
 
     // Consume the pending source channel key
     pendingSourceChannelKey = null;
+    // Clear AI message marker — any TTS after this is user audio, not AI
+    lastAiMessageId = null;
 }
 
 function onCharacterMessageRendered(messageId) {
@@ -704,6 +706,10 @@ function setupTtsCapture() {
 
                 // Skip silence and empty
                 if (!src || src.endsWith('silence.mp3') || src === '') continue;
+
+                // Only forward AI TTS, not user STT audio
+                // lastAiMessageId is set on CHARACTER_MESSAGE_RENDERED, cleared on USER_MESSAGE_RENDERED
+                if (!lastAiMessageId) continue;
 
                 if (src.startsWith('data:audio')) {
                     const match = src.match(/^data:(audio\/[^;]+);base64,(.*)$/);
