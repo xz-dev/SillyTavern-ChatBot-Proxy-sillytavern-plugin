@@ -101,6 +101,7 @@ let reconnectTimer = null;
 let pendingSourceChannelKey = null;
 let isGenerating = false;
 let lastAiMessageId = null;
+let lastProcessedMessageId = -1;
 let ttsObserver = null;
 
 const MAX_RECONNECT_DELAY = 30000;
@@ -594,7 +595,7 @@ async function handleSendFile(msg) {
 // ST Event Handlers: ST → Koishi
 // ============================================================
 
-async function onUserMessageRendered(messageId) {
+async function forwardUserMessage(messageId) {
     const settings = getSettings();
     if (!settings.forwardUser || !isConnected) return;
 
@@ -654,7 +655,7 @@ async function onUserMessageRendered(messageId) {
     lastAiMessageId = null;
 }
 
-async function onCharacterMessageRendered(messageId) {
+async function forwardCharacterMessage(messageId) {
     const settings = getSettings();
     if (!settings.forwardAi || !isConnected) return;
 
@@ -664,6 +665,9 @@ async function onCharacterMessageRendered(messageId) {
 
     // Skip user messages
     if (message.is_user) return;
+
+    // Skip system messages (important for tool calls, although event listener might bypass it)
+    if (message.is_system) return;
 
     log(`CHARACTER_MESSAGE_RENDERED #${messageId}: name=${message.name}, is_system=${message.is_system}, media=${message.extra?.media?.length || 0}`);
 
@@ -707,6 +711,46 @@ async function onCharacterMessageRendered(messageId) {
 
     if (sent) {
         log(`Forwarded AI message (${content.text.substring(0, 50)}...) [images: ${content.images.length}]`);
+    }
+}
+
+async function catchUpMissedMessages(targetId) {
+    const context = getContext();
+    if (!context.chat) return;
+    
+    if (targetId === undefined) {
+        targetId = context.chat.length - 1;
+    }
+    
+    while (lastProcessedMessageId < targetId) {
+        const nextId = lastProcessedMessageId + 1;
+        const msg = context.chat[nextId];
+        
+        if (msg && !msg.is_system) {
+            if (msg.is_user) {
+                await forwardUserMessage(nextId);
+            } else {
+                await forwardCharacterMessage(nextId);
+            }
+        }
+        
+        lastProcessedMessageId = nextId;
+    }
+}
+
+async function onUserMessageRendered(messageId) {
+    await catchUpMissedMessages(messageId - 1);
+    await forwardUserMessage(messageId);
+    if (messageId > lastProcessedMessageId) {
+        lastProcessedMessageId = messageId;
+    }
+}
+
+async function onCharacterMessageRendered(messageId) {
+    await catchUpMissedMessages(messageId - 1);
+    await forwardCharacterMessage(messageId);
+    if (messageId > lastProcessedMessageId) {
+        lastProcessedMessageId = messageId;
     }
 }
 
@@ -1148,6 +1192,13 @@ function registerEvents() {
         updateChatIdDisplay();
         lastAiMessageId = null;
         pendingSourceChannelKey = null;
+        const context = getContext();
+        lastProcessedMessageId = context.chat ? context.chat.length - 1 : -1;
+    });
+
+    // Tool calls rendered (Catch missed messages skipped by streaming bypass)
+    eventSource.on(event_types.TOOL_CALLS_RENDERED, async () => {
+        await catchUpMissedMessages();
     });
 
     // Settings loaded
