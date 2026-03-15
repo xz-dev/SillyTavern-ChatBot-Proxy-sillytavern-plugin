@@ -705,9 +705,6 @@ function setupTtsCapture() {
                 // Skip silence and empty
                 if (!src || src.endsWith('silence.mp3') || src === '') continue;
 
-                // Only capture after AI messages (not user STT)
-                if (!lastAiMessageId) continue;
-
                 if (src.startsWith('data:audio')) {
                     const match = src.match(/^data:(audio\/[^;]+);base64,(.*)$/);
                     if (match) {
@@ -722,8 +719,6 @@ function setupTtsCapture() {
                         log('Forwarded AI TTS audio');
                     }
                 }
-                // Reset after capture to avoid double-sending
-                lastAiMessageId = null;
             }
         });
 
