@@ -436,8 +436,8 @@ async function handleGetAvatar(msg) {
             return;
         }
 
-        // Fetch the character's avatar thumbnail
-        const response = await fetch(`/thumbnail?type=avatar&file=${encodeURIComponent(char.avatar)}`);
+        // Fetch the character's full-size avatar (not thumbnail — Telegram needs larger images)
+        const response = await fetch(`/characters/${encodeURIComponent(char.avatar)}`);
         if (response.ok) {
             const blob = await response.blob();
             const buffer = await blob.arrayBuffer();
