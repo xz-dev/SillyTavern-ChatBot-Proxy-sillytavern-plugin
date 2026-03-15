@@ -1004,6 +1004,28 @@ function registerEvents() {
     eventSource.on(event_types.SETTINGS_LOADED, () => {
         updateChatIdDisplay();
     });
+
+    // Auto-reconnect API when connection drops
+    eventSource.on(event_types.ONLINE_STATUS_CHANGED, (status) => {
+        if (status === 'no_connection') {
+            log('API disconnected, reconnecting in 3s...');
+            setTimeout(() => {
+                // Reuse ST's built-in autoconnect logic (simulate click on the current API's Connect button)
+                const buttonMap = {
+                    'kobold': '#api_button',
+                    'novel': '#api_button_novel',
+                    'textgenerationwebui': '#api_button_textgenerationwebui',
+                    'openai': '#api_button_openai',
+                };
+                const mainApi = $('#main_api').val();
+                const btn = buttonMap[mainApi];
+                if (btn) {
+                    $(btn).trigger('click');
+                    log(`Triggered reconnect for API: ${mainApi}`);
+                }
+            }, 3000);
+        }
+    });
 }
 
 // ============================================================
