@@ -308,8 +308,7 @@ function flushQueue() {
 
 async function handleKoishiMessage(msg) {
     switch (msg.type) {
-        case 'send_message':
-        case 'send_file':
+        case 'send_combined_message':
             enqueueIncoming(msg);
             break;
         case 'validate_chat':
@@ -326,7 +325,7 @@ async function handleKoishiMessage(msg) {
     }
 }
 
-/** Enqueue incoming send_message/send_file for serial processing */
+/** Enqueue incoming send_combined_message for serial processing */
 function enqueueIncoming(msg) {
     incomingQueue.push(msg);
     if (!isProcessingIncoming) {
@@ -339,10 +338,8 @@ async function processIncomingQueue() {
     while (incomingQueue.length > 0) {
         const msg = incomingQueue.shift();
         try {
-            if (msg.type === 'send_message') {
-                await handleSendMessage(msg);
-            } else if (msg.type === 'send_file') {
-                await handleSendFile(msg);
+            if (msg.type === 'send_combined_message') {
+                await handleCombinedMessage(msg);
             }
         } catch (e) {
             log(`Error processing queued message: ${e.message}`, 'error');
@@ -454,141 +451,94 @@ async function handleGetAvatar(msg) {
     }
 }
 
-async function handleSendMessage(msg) {
+async function handleCombinedMessage(msg) {
     const context = getContext();
     const currentChatId = context.chatId;
     const needsSwitch = currentChatId !== msg.chatId;
 
-    log(`Forwarding message from ${msg.senderName} via ${msg.sourceChannelKey}${needsSwitch ? ` (switching from ${currentChatId})` : ''}`);
+    log(`Forwarding combined message from ${msg.senderName} via ${msg.sourceChannelKey}${needsSwitch ? ` (switching from ${currentChatId})` : ''}`);
 
-    // Auto-switch to target chat if needed
     if (needsSwitch) {
         try {
             await switchToChat(msg.chatId);
             log(`Switched to chat: ${msg.chatId}`);
         } catch (e) {
             log(`Failed to switch chat: ${e.message}`, 'error');
-            sendToKoishi({
-                type: 'send_message_result',
-                sourceChannelKey: msg.sourceChannelKey,
-                success: false,
-                error: e.message,
-            });
+            sendToKoishi({ type: 'send_message_result', sourceChannelKey: msg.sourceChannelKey, success: false, error: e.message });
             return;
         }
     }
 
-    // Mark the source so we can tag the outgoing user_message
     pendingSourceChannelKey = msg.sourceChannelKey;
 
     try {
-        await sendMessageAsUser(msg.text);
-        await Generate('normal');
+        let finalMessageText = msg.text || '';
+        const files = msg.files || [];
+
+        // Pre-process audio files for STT if needed
+        for (const file of files) {
+            if (file.mimeType.startsWith('audio/')) {
+                // If there is NO text at all, we treat the audio as voice command (STT)
+                if (finalMessageText.trim() === '') {
+                    log('Audio file with no text detected, attempting STT transcription...');
+                    const transcript = await transcribeAudio(file.data, file.mimeType);
+                    if (transcript) {
+                        log(`Transcribed: "${transcript.substring(0, 50)}..."`);
+                        finalMessageText = transcript;
+                    } else {
+                        log('Transcription returned empty, treating audio as regular file attachment', 'warn');
+                        // Fallback to uploading it as a file attachment
+                        await uploadKoishiFileToST(file);
+                    }
+                } else {
+                    // If there's already text (e.g. sharing a song + text), just attach the audio
+                    log('Audio file accompanied by text, treating as regular file attachment.');
+                    await uploadKoishiFileToST(file);
+                }
+            } else {
+                // Image or other files
+                await uploadKoishiFileToST(file);
+            }
+        }
+
+        // Send the final message if there is text, or if there were any files attached
+        if (finalMessageText.trim() !== '' || files.length > 0) {
+            if (finalMessageText.trim() !== '') {
+                await sendMessageAsUser(finalMessageText);
+            } else {
+                // If no text, but we attached files, send a placeholder so the attachment isn't lost
+                await sendMessageAsUser(' ');
+            }
+            await Generate('normal');
+        }
+
     } catch (e) {
         log(`Failed to send/generate: ${e.message}`, 'error');
-        sendToKoishi({
-            type: 'send_message_result',
-            sourceChannelKey: msg.sourceChannelKey,
-            success: false,
-            error: e.message,
-        });
+        sendToKoishi({ type: 'send_message_result', sourceChannelKey: msg.sourceChannelKey, success: false, error: e.message });
     } finally {
-        // pendingSourceChannelKey is consumed in onUserMessageRendered
-        // but clear it here as a safety net after a delay
-        setTimeout(() => {
-            pendingSourceChannelKey = null;
-        }, 5000);
+        setTimeout(() => { pendingSourceChannelKey = null; }, 5000);
     }
 
-    // Switch back to original chat if we switched away
     if (needsSwitch && currentChatId) {
-        try {
-            await switchToChat(currentChatId);
-            log(`Switched back to: ${currentChatId}`);
-        } catch (e) {
-            log(`Failed to switch back: ${e.message}`, 'warn');
-        }
+        try { await switchToChat(currentChatId); } catch (e) {}
     }
 }
 
-async function handleSendFile(msg) {
-    const context = getContext();
-    const currentChatId = context.chatId;
-    const needsSwitch = currentChatId !== msg.chatId;
-
-    if (needsSwitch) {
-        try {
-            await switchToChat(msg.chatId);
-        } catch (e) {
-            log(`Failed to switch chat for file: ${e.message}`, 'error');
-            sendToKoishi({
-                type: 'send_message_result',
-                sourceChannelKey: msg.sourceChannelKey,
-                success: false,
-                error: e.message,
-            });
-            return;
-        }
+async function uploadKoishiFileToST(fileObj) {
+    const byteString = atob(fileObj.data);
+    const ab = new ArrayBuffer(byteString.length);
+    const ia = new Uint8Array(ab);
+    for (let i = 0; i < byteString.length; i++) {
+        ia[i] = byteString.charCodeAt(i);
     }
+    const blob = new Blob([ab], { type: fileObj.mimeType });
+    const file = new File([blob], fileObj.name, { type: fileObj.mimeType });
 
-    log(`Forwarding file ${msg.file.name} (${msg.file.mimeType}) from ${msg.senderName}`);
-
-    pendingSourceChannelKey = msg.sourceChannelKey;
-
-    try {
-        if (msg.file.mimeType.startsWith('audio/')) {
-            // Audio file → STT transcription → send as text message
-            log('Audio file detected, transcribing...');
-            const transcript = await transcribeAudio(msg.file.data, msg.file.mimeType);
-            if (transcript) {
-                log(`Transcribed: "${transcript.substring(0, 50)}..."`);
-                await sendMessageAsUser(transcript);
-                await Generate('normal');
-            } else {
-                log('Transcription returned empty', 'warn');
-                sendToKoishi({
-                    type: 'send_message_result',
-                    sourceChannelKey: msg.sourceChannelKey,
-                    success: false,
-                    error: 'Failed to transcribe audio (empty result)',
-                });
-            }
-        } else {
-            // Non-audio file → attach to current chat via ST attachment system
-            const byteString = atob(msg.file.data);
-            const ab = new ArrayBuffer(byteString.length);
-            const ia = new Uint8Array(ab);
-            for (let i = 0; i < byteString.length; i++) {
-                ia[i] = byteString.charCodeAt(i);
-            }
-            const blob = new Blob([ab], { type: msg.file.mimeType });
-            const file = new File([blob], msg.file.name, { type: msg.file.mimeType });
-
-            const url = await uploadFileAttachmentToServer(file, 'chat');
-            if (url) {
-                log(`File attached to chat: ${msg.file.name}`);
-            } else {
-                log(`File attachment failed: ${msg.file.name}`, 'error');
-                sendToKoishi({
-                    type: 'send_message_result',
-                    sourceChannelKey: msg.sourceChannelKey,
-                    success: false,
-                    error: `File attachment failed: ${msg.file.name}`,
-                });
-            }
-        }
-    } catch (e) {
-        log(`Failed to handle file: ${e.message}`, 'error');
-        sendToKoishi({
-            type: 'send_message_result',
-            sourceChannelKey: msg.sourceChannelKey,
-            success: false,
-            error: e.message,
-        });
-    } finally {
-        setTimeout(() => {
-            pendingSourceChannelKey = null;
-        }, 5000);
+    const url = await uploadFileAttachmentToServer(file, 'chat');
+    if (url) {
+        log(`File attached to chat: ${fileObj.name}`);
+    } else {
+        log(`File attachment failed: ${fileObj.name}`, 'error');
     }
 }
 
