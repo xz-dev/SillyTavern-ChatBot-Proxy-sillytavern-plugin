@@ -990,58 +990,50 @@ function arrayBufferToBase64(buffer) {
 }
 
 // ============================================================
-// TTS Audio Capture
+// TTS Audio Capture (Intercepting window.fetch)
 // ============================================================
 
 function setupTtsCapture() {
-    // Watch for the #tts_audio element to appear
-    const checkForTtsAudio = setInterval(() => {
-        const audioEl = document.getElementById('tts_audio');
-        if (!audioEl) return;
-
-        clearInterval(checkForTtsAudio);
-        log('TTS audio element detected, setting up capture');
-
-        // Use MutationObserver to watch src attribute changes
-        ttsObserver = new MutationObserver((mutations) => {
-            for (const mutation of mutations) {
-                if (mutation.type !== 'attributes' || mutation.attributeName !== 'src') continue;
-
-                const settings = getSettings();
-                if (!settings.forwardTts || !isConnected) continue;
-
-                const el = mutation.target;
-                const src = el.src;
-
-                // Skip silence and empty
-                if (!src || src.endsWith('silence.mp3') || src === '') continue;
-
-                // Only forward AI TTS, not user STT audio
-                // lastAiMessageId is set on CHARACTER_MESSAGE_RENDERED, cleared on USER_MESSAGE_RENDERED
-                if (!lastAiMessageId) continue;
-
-                if (src.startsWith('data:audio')) {
-                    const match = src.match(/^data:(audio\/[^;]+);base64,(.*)$/);
-                    if (match) {
-                        sendToKoishi({
-                            type: 'ai_tts',
-                            chatId: getContext().chatId,
-                            characterName: getContext().name2,
-                            audio: match[2],
-                            mimeType: match[1],
-                            timestamp: Date.now(),
+    const originalFetch = window.fetch;
+    window.fetch = async function(...args) {
+        const response = await originalFetch.apply(this, args);
+        
+        try {
+            const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
+            const settings = getSettings();
+            
+            if (response.ok && settings.forwardTts && isConnected && !url.includes('/sounds/')) {
+                const contentType = response.headers.get('content-type') || '';
+                if (contentType.startsWith('audio/')) {
+                    // Only forward AI TTS, not user STT audio
+                    if (lastAiMessageId) {
+                        const clone = response.clone();
+                        clone.blob().then(async blob => {
+                            const buffer = await blob.arrayBuffer();
+                            const base64 = arrayBufferToBase64(buffer);
+                            
+                            sendToKoishi({
+                                type: 'ai_tts',
+                                chatId: getContext().chatId || '',
+                                characterName: getContext().name2 || '',
+                                audio: base64,
+                                mimeType: contentType,
+                                timestamp: Date.now(),
+                            });
+                            log('Intercepted TTS fetch and forwarded instantly');
+                        }).catch(e => {
+                            log(`Failed to process intercepted TTS blob: ${e}`, 'warn');
                         });
-                        log('Forwarded AI TTS audio');
                     }
                 }
             }
-        });
-
-        ttsObserver.observe(audioEl, {
-            attributes: true,
-            attributeFilter: ['src'],
-        });
-    }, 2000);
+        } catch (err) {
+            log(`Error in fetch interceptor: ${err}`, 'warn');
+        }
+        
+        return response;
+    };
+    log('TTS fetch interceptor installed');
 }
 
 // ============================================================
