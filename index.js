@@ -104,7 +104,9 @@ let isGenerating = false;
 let lastAiMessageId = null;
 let lastProcessedMessageId = -1;
 let ttsObserver = null;
+let typingHeartbeatTimer = null;
 
+const TYPING_HEARTBEAT_INTERVAL = 2000; // send heartbeat every 2s
 const MAX_RECONNECT_DELAY = 30000;
 const messageQueue = [];
 
@@ -696,21 +698,53 @@ function onGenerationStarted() {
     if (!isConnected) return;
 
     const context = getContext();
-    sendToKoishi({
+    const msg = {
         type: 'generation_started',
-        chatId: getContext().chatId,
+        chatId: context.chatId,
         characterName: context.name2,
-    });
+    };
+
+    // Send immediately
+    sendToKoishi(msg);
+
+    // Start heartbeat: re-send every 2s to keep Koishi typing alive.
+    // If ST crashes / disconnects / tab sleeps, heartbeats stop and
+    // Koishi auto-stops typing after 8s with no heartbeat.
+    stopTypingHeartbeat();
+    typingHeartbeatTimer = setInterval(() => {
+        if (!isGenerating || !isConnected) {
+            stopTypingHeartbeat();
+            return;
+        }
+        const ctx = getContext();
+        sendToKoishi({
+            type: 'generation_started',
+            chatId: ctx.chatId,
+            characterName: ctx.name2,
+        });
+    }, TYPING_HEARTBEAT_INTERVAL);
 }
 
 function onGenerationEnded() {
     isGenerating = false;
-    if (!isConnected) return;
+    stopTypingHeartbeat();
 
+    // Always send — don't gate on isConnected.
+    // sendToKoishi will queue it if disconnected and deliver on reconnect,
+    // giving Koishi an immediate stop signal rather than waiting for
+    // the 8s heartbeat timeout.
     sendToKoishi({
         type: 'generation_ended',
         chatId: getContext().chatId,
     });
+}
+
+/** Clear the typing heartbeat interval */
+function stopTypingHeartbeat() {
+    if (typingHeartbeatTimer) {
+        clearInterval(typingHeartbeatTimer);
+        typingHeartbeatTimer = null;
+    }
 }
 
 // ============================================================
