@@ -322,6 +322,10 @@ async function handleKoishiMessage(msg) {
         case 'get_avatar':
             await handleGetAvatar(msg);
             break;
+        case 'reload_page':
+            log('Reload requested by Koishi, reloading page...');
+            location.reload();
+            break;
         default:
             log(`Unknown message type: ${msg.type}`, 'warn');
     }
