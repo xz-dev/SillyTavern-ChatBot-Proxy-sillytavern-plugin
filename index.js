@@ -2,7 +2,7 @@
 // Bridges SillyTavern chats to Koishi bot channels via WebSocket.
 
 import { getContext, extension_settings } from '../../../extensions.js';
-import { uploadFileAttachmentToServer } from '../../../chats.js';
+
 import {
     eventSource,
     event_types,
@@ -474,41 +474,43 @@ async function handleCombinedMessage(msg) {
     try {
         let finalMessageText = msg.text || '';
         const files = msg.files || [];
+        const attachFiles = [];
 
-        // Pre-process audio files for STT if needed
         for (const file of files) {
-            if (file.mimeType.startsWith('audio/')) {
-                // If there is NO text at all, we treat the audio as voice command (STT)
-                if (finalMessageText.trim() === '') {
-                    log('Audio file with no text detected, attempting STT transcription...');
-                    const transcript = await transcribeAudio(file.data, file.mimeType);
-                    if (transcript) {
-                        log(`Transcribed: "${transcript.substring(0, 50)}..."`);
-                        finalMessageText = transcript;
-                    } else {
-                        log('Transcription returned empty, treating audio as regular file attachment', 'warn');
-                        // Fallback to uploading it as a file attachment
-                        await uploadKoishiFileToST(file);
-                    }
+            if (file.mimeType.startsWith('audio/') && finalMessageText.trim() === '') {
+                // Pure voice message (no text): attempt STT
+                log('Audio file with no text detected, attempting STT transcription...');
+                const transcript = await transcribeAudio(file.data, file.mimeType);
+                if (transcript) {
+                    log(`Transcribed: "${transcript.substring(0, 50)}..."`);
+                    finalMessageText = transcript;
                 } else {
-                    // If there's already text (e.g. sharing a song + text), just attach the audio
-                    log('Audio file accompanied by text, treating as regular file attachment.');
-                    await uploadKoishiFileToST(file);
+                    log('Transcription empty, attaching audio as file', 'warn');
+                    attachFiles.push(file);
                 }
             } else {
-                // Image or other files
-                await uploadKoishiFileToST(file);
+                // All other files (images, PDFs, audio+text combos): attach via ST's file input
+                attachFiles.push(file);
             }
         }
 
-        // Send the final message if there is text, or if there were any files attached
-        if (finalMessageText.trim() !== '' || files.length > 0) {
-            if (finalMessageText.trim() !== '') {
-                await sendMessageAsUser(finalMessageText);
-            } else {
-                // If no text, but we attached files, send a placeholder so the attachment isn't lost
-                await sendMessageAsUser(' ');
+        // Inject files into ST's file input (simulates "Attach a File" button)
+        if (attachFiles.length > 0) {
+            const dt = new DataTransfer();
+            for (const f of attachFiles) {
+                const binary = atob(f.data);
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                dt.items.add(new File([bytes], f.name, { type: f.mimeType }));
             }
+            const fileInput = document.getElementById('file_form_input');
+            if (fileInput) fileInput.files = dt.files;
+            log(`Injected ${attachFiles.length} file(s) into ST file input`);
+        }
+
+        // Send message (ST's sendMessageAsUser will auto-process pending file attachments)
+        if (finalMessageText.trim() !== '' || attachFiles.length > 0) {
+            await sendMessageAsUser(finalMessageText.trim() || ' ');
             await Generate('normal');
         }
 
@@ -521,24 +523,6 @@ async function handleCombinedMessage(msg) {
 
     if (needsSwitch && currentChatId) {
         try { await switchToChat(currentChatId); } catch (e) {}
-    }
-}
-
-async function uploadKoishiFileToST(fileObj) {
-    const byteString = atob(fileObj.data);
-    const ab = new ArrayBuffer(byteString.length);
-    const ia = new Uint8Array(ab);
-    for (let i = 0; i < byteString.length; i++) {
-        ia[i] = byteString.charCodeAt(i);
-    }
-    const blob = new Blob([ab], { type: fileObj.mimeType });
-    const file = new File([blob], fileObj.name, { type: fileObj.mimeType });
-
-    const url = await uploadFileAttachmentToServer(file, 'chat');
-    if (url) {
-        log(`File attached to chat: ${fileObj.name}`);
-    } else {
-        log(`File attachment failed: ${fileObj.name}`, 'error');
     }
 }
 
