@@ -664,12 +664,8 @@ async function catchUpMissedMessages(targetId) {
         const nextId = lastProcessedMessageId + 1;
         const msg = context.chat[nextId];
         
-        if (msg && !msg.is_system) {
-            if (msg.is_user) {
-                await forwardUserMessage(nextId);
-            } else {
-                await forwardCharacterMessage(nextId);
-            }
+        if (msg && !msg.is_system && !msg.is_user) {
+            await forwardCharacterMessage(nextId);
         }
         
         lastProcessedMessageId = nextId;
@@ -677,11 +673,11 @@ async function catchUpMissedMessages(targetId) {
 }
 
 async function onUserMessageRendered(messageId) {
-    await catchUpMissedMessages(messageId - 1);
-    await forwardUserMessage(messageId);
+    // Advance watermark — no catch-up, this marks the start of a new turn
     if (messageId > lastProcessedMessageId) {
         lastProcessedMessageId = messageId;
     }
+    await forwardUserMessage(messageId);
 }
 
 async function onCharacterMessageRendered(messageId) {
@@ -1163,7 +1159,6 @@ function registerEvents() {
     // Chat changed — update chat ID display
     eventSource.on(event_types.CHAT_CHANGED, () => {
         updateChatIdDisplay();
-        lastAiMessageId = null;
         pendingSourceChannelKey = null;
         const context = getContext();
         lastProcessedMessageId = context.chat ? context.chat.length - 1 : -1;
@@ -1225,6 +1220,10 @@ HTMLMediaElement.prototype.play = function() {
 jQuery(async () => {
     // Init UI
     await initUI();
+
+    // Initialize watermark to current chat length to avoid replaying history
+    const context = getContext();
+    lastProcessedMessageId = context.chat ? context.chat.length - 1 : -1;
 
     // Register event listeners
     registerEvents();
