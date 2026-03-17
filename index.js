@@ -602,8 +602,6 @@ async function forwardCharacterMessage(messageId) {
     // Skip user messages
     if (message.is_user) return;
 
-    log(`CHARACTER_MESSAGE_RENDERED #${messageId}: name=${message.name}, is_system=${message.is_system}, media=${message.extra?.media?.length || 0}`);
-
     const content = {
         text: message.mes || '',
         images: [],
@@ -652,16 +650,10 @@ async function forwardCharacterMessage(messageId) {
 }
 
 async function onUserMessageRendered(messageId) {
-    const context = getContext();
-    const message = context.chat?.[messageId];
-    log(`USER_MESSAGE_RENDERED #${messageId}: chatId=${context.chatId}, text="${(message?.mes || '').substring(0, 50)}..."`);
     await forwardUserMessage(messageId);
 }
 
 async function onCharacterMessageRendered(messageId) {
-    const context = getContext();
-    const message = context.chat?.[messageId];
-    log(`CHARACTER_MESSAGE_RENDERED #${messageId}: chatId=${context.chatId}, name=${message?.name}, media=${message?.extra?.media?.length || 0}`);
     await forwardCharacterMessage(messageId);
 }
 
@@ -1137,12 +1129,6 @@ function registerEvents() {
     eventSource.on(event_types.CHAT_CHANGED, () => {
         updateChatIdDisplay();
         pendingSourceChannelKey = null;
-    });
-
-    // Tool calls rendered — log for debugging (may be used for catch-up in the future)
-    eventSource.on(event_types.TOOL_CALLS_RENDERED, (invocations) => {
-        const names = Array.isArray(invocations) ? invocations.map(i => i.displayName || i.name).join(', ') : '?';
-        log(`TOOL_CALLS_RENDERED: [${names}]`);
     });
 
     // Settings loaded
