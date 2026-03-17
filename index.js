@@ -101,7 +101,6 @@ let reconnectAttempts = 0;
 let reconnectTimer = null;
 let pendingSourceChannelKey = null;
 let isGenerating = false;
-let lastProcessedMessageId = -1;
 let typingHeartbeatTimer = null;
 
 const TYPING_HEARTBEAT_INTERVAL = 2000; // send heartbeat every 2s
@@ -652,40 +651,18 @@ async function forwardCharacterMessage(messageId) {
     }
 }
 
-async function catchUpMissedMessages(targetId) {
-    const context = getContext();
-    if (!context.chat) return;
-    
-    if (targetId === undefined) {
-        targetId = context.chat.length - 1;
-    }
-    
-    while (lastProcessedMessageId < targetId) {
-        const nextId = lastProcessedMessageId + 1;
-        const msg = context.chat[nextId];
-        
-        if (msg && !msg.is_system && !msg.is_user) {
-            await forwardCharacterMessage(nextId);
-        }
-        
-        lastProcessedMessageId = nextId;
-    }
-}
-
 async function onUserMessageRendered(messageId) {
-    // Advance watermark — no catch-up, this marks the start of a new turn
-    if (messageId > lastProcessedMessageId) {
-        lastProcessedMessageId = messageId;
-    }
+    const context = getContext();
+    const message = context.chat?.[messageId];
+    log(`USER_MESSAGE_RENDERED #${messageId}: chatId=${context.chatId}, text="${(message?.mes || '').substring(0, 50)}..."`);
     await forwardUserMessage(messageId);
 }
 
 async function onCharacterMessageRendered(messageId) {
-    await catchUpMissedMessages(messageId - 1);
+    const context = getContext();
+    const message = context.chat?.[messageId];
+    log(`CHARACTER_MESSAGE_RENDERED #${messageId}: chatId=${context.chatId}, name=${message?.name}, media=${message?.extra?.media?.length || 0}`);
     await forwardCharacterMessage(messageId);
-    if (messageId > lastProcessedMessageId) {
-        lastProcessedMessageId = messageId;
-    }
 }
 
 function onGenerationStarted() {
@@ -1160,13 +1137,12 @@ function registerEvents() {
     eventSource.on(event_types.CHAT_CHANGED, () => {
         updateChatIdDisplay();
         pendingSourceChannelKey = null;
-        const context = getContext();
-        lastProcessedMessageId = context.chat ? context.chat.length - 1 : -1;
     });
 
-    // Tool calls rendered (Catch missed messages skipped by streaming bypass)
-    eventSource.on(event_types.TOOL_CALLS_RENDERED, async () => {
-        await catchUpMissedMessages();
+    // Tool calls rendered — log for debugging (may be used for catch-up in the future)
+    eventSource.on(event_types.TOOL_CALLS_RENDERED, (invocations) => {
+        const names = Array.isArray(invocations) ? invocations.map(i => i.displayName || i.name).join(', ') : '?';
+        log(`TOOL_CALLS_RENDERED: [${names}]`);
     });
 
     // Settings loaded
@@ -1220,10 +1196,6 @@ HTMLMediaElement.prototype.play = function() {
 jQuery(async () => {
     // Init UI
     await initUI();
-
-    // Initialize watermark to current chat length to avoid replaying history
-    const context = getContext();
-    lastProcessedMessageId = context.chat ? context.chat.length - 1 : -1;
 
     // Register event listeners
     registerEvents();
