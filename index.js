@@ -1156,10 +1156,24 @@ function registerEvents() {
     eventSource.on(event_types.USER_MESSAGE_RENDERED, onUserMessageRendered);
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onCharacterMessageRendered);
 
-    // Generation lifecycle
-    eventSource.on(event_types.GENERATION_STARTED, onGenerationStarted);
-    eventSource.on(event_types.GENERATION_ENDED, onGenerationEnded);
-    eventSource.on(event_types.GENERATION_STOPPED, onGenerationEnded);
+    // Generation lifecycle — use MutationObserver on body[data-generating]
+    // This is the single source of truth for SillyTavern's generation state,
+    // synced with the send/stop button visibility. More reliable than
+    // GENERATION_STARTED/ENDED events which can miss edge cases (tool calls, etc.)
+    const generationObserver = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+            if (m.attributeName === 'data-generating') {
+                if (document.body.dataset.generating === 'true') {
+                    log('body[data-generating] = true');
+                    onGenerationStarted();
+                } else {
+                    log('body[data-generating] removed');
+                    onGenerationEnded();
+                }
+            }
+        }
+    });
+    generationObserver.observe(document.body, { attributes: true, attributeFilter: ['data-generating'] });
 
     // Chat changed — update chat ID display
     eventSource.on(event_types.CHAT_CHANGED, () => {
