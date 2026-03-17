@@ -101,9 +101,7 @@ let reconnectAttempts = 0;
 let reconnectTimer = null;
 let pendingSourceChannelKey = null;
 let isGenerating = false;
-let lastAiMessageId = null;
 let lastProcessedMessageId = -1;
-let ttsObserver = null;
 let typingHeartbeatTimer = null;
 
 const TYPING_HEARTBEAT_INTERVAL = 2000; // send heartbeat every 2s
@@ -592,8 +590,6 @@ async function forwardUserMessage(messageId) {
 
     // Consume the pending source channel key
     pendingSourceChannelKey = null;
-    // Clear AI message marker — any TTS after this is user audio, not AI
-    lastAiMessageId = null;
 }
 
 async function forwardCharacterMessage(messageId) {
@@ -608,8 +604,6 @@ async function forwardCharacterMessage(messageId) {
     if (message.is_user) return;
 
     log(`CHARACTER_MESSAGE_RENDERED #${messageId}: name=${message.name}, is_system=${message.is_system}, media=${message.extra?.media?.length || 0}`);
-
-    lastAiMessageId = messageId;
 
     const content = {
         text: message.mes || '',
@@ -648,6 +642,7 @@ async function forwardCharacterMessage(messageId) {
         type: 'ai_message',
         chatId: context.chatId,
         characterName: context.name2,
+        messageId: messageId,
         content,
         timestamp: Date.now(),
     });
@@ -962,50 +957,40 @@ function arrayBufferToBase64(buffer) {
 }
 
 // ============================================================
-// TTS Audio Capture (Intercepting window.fetch)
+// TTS Audio Capture (via TTS extension events)
 // ============================================================
 
 function setupTtsCapture() {
-    const originalFetch = window.fetch;
-    window.fetch = async function(...args) {
-        const response = await originalFetch.apply(this, args);
-        
+    const { eventSource } = SillyTavern.getContext();
+    eventSource.on('tts_audio_ready', async (eventData) => {
+        const settings = getSettings();
+        if (!settings.forwardTts || !isConnected) return;
+
+        const { messageId, characterName, audio, mimeType } = eventData;
         try {
-            const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
-            const settings = getSettings();
-            
-            if (response.ok && settings.forwardTts && isConnected && !url.includes('/sounds/')) {
-                const contentType = response.headers.get('content-type') || '';
-                if (contentType.startsWith('audio/')) {
-                    // Only forward AI TTS, not user STT audio
-                    if (lastAiMessageId) {
-                        const clone = response.clone();
-                        clone.blob().then(async blob => {
-                            const buffer = await blob.arrayBuffer();
-                            const base64 = arrayBufferToBase64(buffer);
-                            
-                            sendToKoishi({
-                                type: 'ai_tts',
-                                chatId: getContext().chatId || '',
-                                characterName: getContext().name2 || '',
-                                audio: base64,
-                                mimeType: contentType,
-                                timestamp: Date.now(),
-                            });
-                            log('Intercepted TTS fetch and forwarded instantly');
-                        }).catch(e => {
-                            log(`Failed to process intercepted TTS blob: ${e}`, 'warn');
-                        });
-                    }
-                }
+            let base64;
+            if (audio instanceof Blob) {
+                const buffer = await audio.arrayBuffer();
+                base64 = arrayBufferToBase64(buffer);
+            } else {
+                return; // URL-based or empty audio — not forwardable
             }
-        } catch (err) {
-            log(`Error in fetch interceptor: ${err}`, 'warn');
+
+            sendToKoishi({
+                type: 'ai_tts',
+                chatId: getContext().chatId || '',
+                characterName: characterName || getContext().name2 || '',
+                messageId: messageId ?? null,
+                audio: base64,
+                mimeType: mimeType || 'audio/mpeg',
+                timestamp: Date.now(),
+            });
+            log(`TTS forwarded (msg #${messageId ?? 'none'})`);
+        } catch (e) {
+            log(`TTS forward error: ${e}`, 'warn');
         }
-        
-        return response;
-    };
-    log('TTS fetch interceptor installed');
+    });
+    log('TTS event listener installed');
 }
 
 // ============================================================
