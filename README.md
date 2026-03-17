@@ -36,9 +36,9 @@ SillyTavern client extension that bridges chats to Koishi bot channels via WebSo
 
 ## SillyTavern Fork
 
-This extension requires a forked version of SillyTavern with two patches applied on top of the `staging` branch:
+This extension requires a forked version of SillyTavern with two patches applied on top of the `staging` branch. Both have been submitted as upstream PRs:
 
-### TTS Event Signals (`feat/tts-events`)
+### TTS Event Signals ([PR #5309](https://github.com/SillyTavern/SillyTavern/pull/5309))
 
 Adds event emissions to the TTS pipeline so extensions can receive audio data without intercepting `window.fetch`:
 
@@ -50,7 +50,7 @@ Adds event emissions to the TTS pipeline so extensions can receive audio data wi
 
 Also tracks `messageId` through the entire TTS pipeline (`_ttsMessageId` on job objects) so each audio piece can be associated with its source chat message.
 
-### Streaming + Tool Call Fix (`fix/streaming-tool-call-events`)
+### Streaming + Tool Call Fix ([PR #5308](https://github.com/SillyTavern/SillyTavern/pull/5308))
 
 Fixes an upstream bug where `MESSAGE_RECEIVED` and `CHARACTER_MESSAGE_RENDERED` are never emitted for AI text messages that precede tool calls in streaming mode.
 
