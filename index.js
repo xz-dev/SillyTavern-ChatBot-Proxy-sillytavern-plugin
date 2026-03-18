@@ -105,6 +105,7 @@ let typingHeartbeatTimer = null;
 
 const TYPING_HEARTBEAT_INTERVAL = 2000; // send heartbeat every 2s
 const MAX_RECONNECT_DELAY = 30000;
+const MAX_QUEUE_SIZE = 100;
 const messageQueue = [];
 
 // Incoming message queue for serial processing (prevents concurrent Generate() calls)
@@ -280,6 +281,14 @@ function sendToKoishi(msg) {
     }
     // WS not available or send failed — queue the message
     messageQueue.push(msg);
+    let dropped = 0;
+    while (messageQueue.length > MAX_QUEUE_SIZE) {
+        messageQueue.shift();
+        dropped++;
+    }
+    if (dropped > 0) {
+        log(`Queue full, dropped ${dropped} oldest message(s)`);
+    }
     log(`Message queued (${messageQueue.length} pending)`);
     return false;
 }
@@ -769,7 +778,12 @@ async function transcribeAudio(base64Data, mimeType) {
         // Decode to AudioBuffer then convert to WAV (replicating STT extension behavior)
         const arrayBuffer = await audioBlob.arrayBuffer();
         const audioContext = new AudioContext();
-        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        let audioBuffer;
+        try {
+            audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        } finally {
+            audioContext.close();
+        }
         const wavBlob = await convertAudioBufferToWavBlob(audioBuffer);
 
         // For local whisper endpoint, send as JSON with base64 data URI
