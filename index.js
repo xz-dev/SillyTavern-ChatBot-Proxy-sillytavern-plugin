@@ -39,6 +39,7 @@ const DEFAULT_SETTINGS = {
     forwardTts: true,
     forwardImages: true,
     forwardImageDescriptions: false,
+    forwardReasoning: true,
     autoReconnectApi: true,
 };
 
@@ -614,6 +615,7 @@ async function forwardCharacterMessage(messageId) {
     const content = {
         text: message.mes || '',
         images: [],
+        reasoning: (settings.forwardReasoning && message.extra?.reasoning) ? message.extra.reasoning : '',
     };
 
     // If this is an image generation message and forwardImageDescriptions is false, clear the text
@@ -642,7 +644,7 @@ async function forwardCharacterMessage(messageId) {
         }
     }
 
-    if (!content.text && content.images.length === 0) return;
+    if (!content.text && !content.reasoning && content.images.length === 0) return;
 
     const sent = sendToKoishi({
         type: 'ai_message',
@@ -1035,6 +1037,7 @@ async function initUI() {
     const forwardTtsInput = document.getElementById('koishi_bridge_forward_tts');
     const forwardImagesInput = document.getElementById('koishi_bridge_forward_images');
     const forwardImageDescriptionsInput = document.getElementById('koishi_bridge_forward_image_descriptions');
+    const forwardReasoningInput = document.getElementById('koishi_bridge_forward_reasoning');
     const autoReconnectApiInput = document.getElementById('koishi_bridge_auto_reconnect_api');
 
     if (wsUrlInput) wsUrlInput.value = settings.wsUrl;
@@ -1045,6 +1048,7 @@ async function initUI() {
     if (forwardTtsInput) forwardTtsInput.checked = settings.forwardTts;
     if (forwardImagesInput) forwardImagesInput.checked = settings.forwardImages;
     if (forwardImageDescriptionsInput) forwardImageDescriptionsInput.checked = settings.forwardImageDescriptions;
+    if (forwardReasoningInput) forwardReasoningInput.checked = settings.forwardReasoning;
     if (autoReconnectApiInput) autoReconnectApiInput.checked = settings.autoReconnectApi;
 
     // Bind change events
@@ -1085,6 +1089,11 @@ async function initUI() {
 
     forwardImageDescriptionsInput?.addEventListener('change', () => {
         settings.forwardImageDescriptions = forwardImageDescriptionsInput.checked;
+        saveSettings();
+    });
+
+    forwardReasoningInput?.addEventListener('change', () => {
+        settings.forwardReasoning = forwardReasoningInput.checked;
         saveSettings();
     });
 
